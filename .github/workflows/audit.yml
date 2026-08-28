@@ -1,0 +1,40 @@
+name: Audit Promotion Digests
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional version without v, e.g. 1.0.0
+        required: false
+        type: string
+permissions:
+  contents: read
+  packages: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Show registry state
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          source scripts/lib.sh
+          IMAGE=$(image_name)
+          echo '| tag | digest |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|---|---|' >> "$GITHUB_STEP_SUMMARY"
+          TAGS=(env-webnd env-webnt env-webct env-production)
+          if [[ -n "$VERSION" ]]; then TAGS+=("release-v${VERSION}" "v${VERSION}"); fi
+          for tag in "${TAGS[@]}"; do
+            if docker buildx imagetools inspect "$IMAGE:$tag" >/dev/null 2>&1; then
+              d=$(resolve_digest "$IMAGE:$tag")
+              echo "| \`$tag\` | \`$d\` |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$tag\` | not present |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done

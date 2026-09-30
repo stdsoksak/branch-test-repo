@@ -19,10 +19,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HARBOR_REGISTRY: harbor.pegasusum.com
-  HARBOR_PROJECT: nexum_backend
-  GITOPS_OWNER: PGS
-  GITOPS_REPOSITORY: pegasus-devops
+  REGISTRY: registry.kube-system.svc.cluster.local:80
+  REGISTRY_PROJECT: nexum
+  GITOPS_OWNER: stdsoksak
+  GITOPS_REPOSITORY: test-gitops
   GITOPS_BRANCH: main
   GITOPS_PROJECT_PATH: nexum/argocd/environments
   GITOPS_RELEASE_PATH: nexum/releases
@@ -31,7 +31,7 @@ jobs:
   prepare-release:
     if: github.event_name == 'workflow_dispatch' || github.event.created == false
     name: Create Release Branch from WEBNT
-    runs-on: actiontest
+    runs-on: nexum-project-local
 
     outputs:
       version: ${{ steps.metadata.outputs.version }}
@@ -237,7 +237,7 @@ jobs:
     with:
       source_revision: ${{ needs.prepare-release.outputs.source_revision }}
       image_name: webapp
-      dockerfile: Presentation/UI/Presentation.UI.WebUI/Dockerfile
+      dockerfile: Dockerfile_project1
     secrets: inherit
 
   build-internalapi:
@@ -247,7 +247,7 @@ jobs:
     with:
       source_revision: ${{ needs.prepare-release.outputs.source_revision }}
       image_name: internalapi
-      dockerfile: Presentation/API/Presentation.API.InternalApi/Dockerfile
+      dockerfile: Dockerfile_project2
     secrets: inherit
 
   build-externalapi:
@@ -257,7 +257,7 @@ jobs:
     with:
       source_revision: ${{ needs.prepare-release.outputs.source_revision }}
       image_name: externalapi
-      dockerfile: Presentation/API/Presentation.API.ExternalApi/Dockerfile
+      dockerfile: Dockerfile_project3
     secrets: inherit
 
   tag-release-candidate:
@@ -268,7 +268,7 @@ jobs:
       - build-webapp
       - build-internalapi
       - build-externalapi
-    runs-on: actiontest
+    runs-on: nexum-project-local
     environment: webct
 
     steps:
@@ -279,15 +279,9 @@ jobs:
           driver-opts: |
             network=host
           buildkitd-config-inline: |
-            [registry."${{ env.HARBOR_REGISTRY }}"]
+            [registry."${{ env.REGISTRY }}"]
+              http = true
               insecure = true
-
-      - name: Login to Harbor
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.HARBOR_REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Create RC aliases from immutable digests
         shell: bash
@@ -302,7 +296,7 @@ jobs:
           alias_image() {
             local app="$1"
             local digest="$2"
-            local repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app}"
+            local repository="${REGISTRY}/${REGISTRY_PROJECT}/${app}"
             local existing
 
             existing="$(docker buildx imagetools inspect "${repository}:${RELEASE_ID}" 2>/dev/null | awk '/^Digest:/ {print $2; exit}' || true)"

@@ -51,10 +51,10 @@ on:
         value: ${{ jobs.update.outputs.pull_request_url }}
 
 env:
-  HARBOR_REGISTRY: harbor.pegasusum.com
-  HARBOR_PROJECT: nexum_backend
-  GITOPS_OWNER: PGS
-  GITOPS_REPOSITORY: pegasus-devops
+  REGISTRY: registry.kube-system.svc.cluster.local:80
+  REGISTRY_PROJECT: nexum
+  GITOPS_OWNER: stdsoksak
+  GITOPS_REPOSITORY: test-gitops
   GITOPS_BRANCH: main
   GITOPS_PROJECT_PATH: nexum/argocd/environments
   GITOPS_RELEASE_PATH: nexum/releases
@@ -62,7 +62,7 @@ env:
 jobs:
   update:
     name: Update ${{ inputs.target_environment }} artifact set
-    runs-on: actiontest
+    runs-on: nexum-project-local
     environment: ${{ inputs.target_environment }}
 
     outputs:
@@ -180,8 +180,11 @@ jobs:
 
               file_pattern="${file_pattern}${file_pattern:+,}${values_path}"
 
-              APP_NAME="$app_name" DIGEST="$digest" LABEL_BRANCH="$label_branch" yq -i \
-                '.deployment.image.tag = strenv(IMAGE_TAG) |
+              repo="${REGISTRY}/${REGISTRY_PROJECT}/${app_name}"
+
+              APP_NAME="$app_name" DIGEST="$digest" LABEL_BRANCH="$label_branch" REPO="$repo" yq -i \
+                '.deployment.image.repository = strenv(REPO) |
+                 .deployment.image.tag = strenv(IMAGE_TAG) |
                  .deployment.image.digest = strenv(DIGEST) |
                  .deployment.labels."app.kubernetes.io/name" = strenv(APP_NAME) |
                  .deployment.labels."app.kubernetes.io/version" = strenv(VERSION) |
@@ -217,7 +220,7 @@ jobs:
                 [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "gitops/$catalog_path")" = "$expected_digest" ]
                 [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
                 [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag' "gitops/$catalog_path")" = "$IMAGE_TAG" ]
-                [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].repository' "gitops/$catalog_path")" = "$HARBOR_REGISTRY/$HARBOR_PROJECT/$app_name" ]
+                [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].repository' "gitops/$catalog_path")" = "$REGISTRY/$REGISTRY_PROJECT/$app_name" ]
               done
             else
               [ "$CREATE_CATALOG" = "true" ] || {
@@ -231,6 +234,7 @@ jobs:
               internalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "internalapi") | .digest')"
               externalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "externalapi") | .digest')"
 
+              REGISTRY="$REGISTRY" REGISTRY_PROJECT="$REGISTRY_PROJECT" \
               CREATED_AT="$created_at" RUN_URL="$run_url" \
               WEBAPP_DIGEST="$webapp_digest" INTERNALAPI_DIGEST="$internalapi_digest" \
               EXTERNALAPI_DIGEST="$externalapi_digest" yq -n '
@@ -255,19 +259,19 @@ jobs:
                   "services": {
                     "webapp": {
                       "sourceCommit": strenv(SOURCE_REVISION),
-                      "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/webapp",
+                      "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/webapp",
                       "digest": strenv(WEBAPP_DIGEST),
                       "tag": strenv(IMAGE_TAG)
                     },
                     "internalapi": {
                       "sourceCommit": strenv(SOURCE_REVISION),
-                      "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/internalapi",
+                      "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/internalapi",
                       "digest": strenv(INTERNALAPI_DIGEST),
                       "tag": strenv(IMAGE_TAG)
                     },
                     "externalapi": {
                       "sourceCommit": strenv(SOURCE_REVISION),
-                      "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/externalapi",
+                      "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/externalapi",
                       "digest": strenv(EXTERNALAPI_DIGEST),
                       "tag": strenv(IMAGE_TAG)
                     }

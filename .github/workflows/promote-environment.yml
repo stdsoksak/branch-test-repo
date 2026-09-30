@@ -54,10 +54,10 @@ on:
         value: ${{ jobs.validate.outputs.release_id }}
 
 env:
-  HARBOR_REGISTRY: harbor.pegasusum.com
-  HARBOR_PROJECT: nexum_backend
-  GITOPS_OWNER: PGS
-  GITOPS_REPOSITORY: pegasus-devops
+  REGISTRY: registry.kube-system.svc.cluster.local:80
+  REGISTRY_PROJECT: nexum
+  GITOPS_OWNER: stdsoksak
+  GITOPS_REPOSITORY: test-gitops
   GITOPS_BRANCH: main
   GITOPS_PROJECT_PATH: nexum/argocd/environments
   GITOPS_RELEASE_PATH: nexum/releases
@@ -65,7 +65,7 @@ env:
 jobs:
   validate:
     name: Validate ${{ inputs.source_environment }} artifacts
-    runs-on: actiontest
+    runs-on: nexum-project-local
     environment: ${{ inputs.target_environment }}
 
     outputs:
@@ -87,15 +87,9 @@ jobs:
           driver-opts: |
             network=host
           buildkitd-config-inline: |
-            [registry."${{ env.HARBOR_REGISTRY }}"]
+            [registry."${{ env.REGISTRY }}"]
+              http = true
               insecure = true
-
-      - name: Login to Harbor
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.HARBOR_REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
@@ -249,8 +243,8 @@ jobs:
             echo "target_tag=$target_tag" >> "$GITHUB_OUTPUT"
             echo "source_branch=$SOURCE_BRANCH" >> "$GITHUB_OUTPUT"
 
-      # Harbor validates that GitOps still references the expected immutable artifacts.
-      - name: Verify artifacts in Harbor
+      # Verify that GitOps still references the expected immutable artifacts.
+      - name: Verify artifacts in Registry
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.metadata.outputs.source_image_tag }}
@@ -263,7 +257,7 @@ jobs:
           verify_image() {
             local app="$1"
             local expected_digest="$2"
-            local repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app}"
+            local repository="${REGISTRY}/${REGISTRY_PROJECT}/${app}"
             local image="${repository}:${SOURCE_TAG}"
 
             actual_digest="$(
@@ -273,8 +267,8 @@ jobs:
 
             [[ "$actual_digest" == "$expected_digest" ]] || {
               echo "Digest mismatch for $app"
-              echo "GitOps : $expected_digest"
-              echo "Harbor : $actual_digest"
+              echo "GitOps   : $expected_digest"
+              echo "Registry : $actual_digest"
               exit 1
             }
           }
@@ -298,7 +292,7 @@ jobs:
           alias_image() {
             local app="$1"
             local expected_digest="$2"
-            local repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app}"
+            local repository="${REGISTRY}/${REGISTRY_PROJECT}/${app}"
             local existing_digest
 
             existing_digest="$(

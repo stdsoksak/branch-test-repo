@@ -1,0 +1,365 @@
+name: CD - Release
+
+on:
+  push:
+    branches:
+      - "release/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example 1.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nexum-cd
+  cancel-in-progress: false
+
+env:
+  HARBOR_REGISTRY: harbor.pegasusum.com
+  HARBOR_PROJECT: nexum_backend
+  GITOPS_OWNER: PGS
+  GITOPS_REPOSITORY: pegasus-devops
+  GITOPS_BRANCH: main
+  GITOPS_PROJECT_PATH: nexum/argocd/environments
+  GITOPS_RELEASE_PATH: nexum/releases
+
+jobs:
+  prepare-release:
+    if: github.event_name == 'workflow_dispatch' || github.event.created == false
+    name: Create Release Branch from WEBNT
+    runs-on: actiontest
+
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      branch: ${{ steps.metadata.outputs.branch }}
+      release_id: ${{ steps.metadata.outputs.release_id }}
+      source_revision: ${{ steps.metadata.outputs.source_revision }}
+      source_release_id: ${{ steps.webnt_release.outputs.result }}
+
+    steps:
+      - name: Checkout Nexum
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_OWNER }}/${{ env.GITOPS_REPOSITORY }}
+          ref: ${{ env.GITOPS_BRANCH }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve release identity
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="${INPUT_VERSION#v}"
+            RELEASE_BRANCH="release/v${VERSION}"
+          else
+            RELEASE_BRANCH="$GITHUB_REF_NAME"
+            [[ "$RELEASE_BRANCH" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
+              echo "Release branch must look like release/v1.2.0"
+              exit 1
+            }
+            VERSION="${BASH_REMATCH[1]}"
+          fi
+
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Version must look like 1.2.0"
+            exit 1
+          }
+
+          echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "branch=$RELEASE_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Require an active newer release version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags origin
+
+          requested="${REQUESTED_VERSION#v}"
+          IFS=. read -r requested_major requested_minor requested_patch <<< "$requested"
+          requested_major=$((10#$requested_major))
+          requested_minor=$((10#$requested_minor))
+          requested_patch=$((10#$requested_patch))
+
+          latest_tag=""
+          latest_major=-1
+          latest_minor=-1
+          latest_patch=-1
+
+          while IFS= read -r tag; do
+            if [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              major=$((10#${BASH_REMATCH[1]}))
+              minor=$((10#${BASH_REMATCH[2]}))
+              patch=$((10#${BASH_REMATCH[3]}))
+            elif [[ "$tag" =~ ^hotfix-v([0-9]+)\.([0-9]+)\.([0-9]+)(-.+)?$ ]]; then
+              major=$((10#${BASH_REMATCH[1]}))
+              minor=$((10#${BASH_REMATCH[2]}))
+              patch=$((10#${BASH_REMATCH[3]}))
+            else
+              continue
+            fi
+
+            if (( major > latest_major ||
+                  major == latest_major && minor > latest_minor ||
+                  major == latest_major && minor == latest_minor && patch > latest_patch )); then
+              latest_tag="$tag"
+              latest_major=$major
+              latest_minor=$minor
+              latest_patch=$patch
+            fi
+          done < <(git tag --list)
+
+          if [[ -n "$latest_tag" ]] &&
+             (( requested_major < latest_major ||
+                requested_major == latest_major && requested_minor < latest_minor ||
+                requested_major == latest_major && requested_minor == latest_minor && requested_patch <= latest_patch )); then
+            echo "Requested $REQUESTED_VERSION must be newer than $latest_tag."
+            exit 1
+          fi
+
+      - name: Read WEBNT release ID
+        if: github.event_name == 'workflow_dispatch'
+        id: webnt_release
+        uses: mikefarah/yq@v4.53.6
+        with:
+          cmd: yq -r '.deployment.labels."nexum.pegasusum.com/release-id" // ""' 'gitops/${{ env.GITOPS_PROJECT_PATH }}/webnt/webapp/values.yaml'
+
+      - name: Read WEBNT source revision from catalog
+        if: github.event_name == 'workflow_dispatch'
+        id: webnt_source
+        uses: mikefarah/yq@v4.53.6
+        env:
+          RELEASE_ID: ${{ steps.webnt_release.outputs.result }}
+        with:
+          cmd: |
+            set -eu
+            printf '%s\n' "$RELEASE_ID" | grep -Eq '^git-[0-9a-f]{7,40}$'
+            catalog="gitops/$GITOPS_RELEASE_PATH/$RELEASE_ID.yaml"
+            [ -f "$catalog" ]
+            echo "source_revision=$(yq -r '.source.revision // ""' "$catalog")" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release candidate metadata
+        id: metadata
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
+          WEBNT_RELEASE_ID: ${{ steps.webnt_release.outputs.result }}
+          WEBNT_SOURCE_REVISION: ${{ steps.webnt_source.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$WEBNT_RELEASE_ID" == git-* ]] || {
+              echo "WEBNT must reference a git-* build catalog entry."
+              exit 1
+            }
+            SOURCE_REVISION="$WEBNT_SOURCE_REVISION"
+            git fetch origin develop
+            git cat-file -e "${SOURCE_REVISION}^{commit}"
+            git merge-base --is-ancestor "$SOURCE_REVISION" origin/develop
+          else
+            SOURCE_REVISION="$GITHUB_SHA"
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            release_id="${VERSION}-rc.1"
+          else
+            max_rc=0
+            for catalog in "gitops/$GITOPS_RELEASE_PATH/${VERSION}-rc."*.yaml; do
+              [[ -e "$catalog" ]] || continue
+              candidate="${catalog##*/}"
+              candidate="${candidate%.yaml}"
+              [[ "$candidate" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || continue
+              (( BASH_REMATCH[1] > max_rc )) && max_rc="${BASH_REMATCH[1]}"
+            done
+
+            while IFS= read -r ref; do
+              candidate="${ref##*/gitops/nexum-webct-}"
+              [[ "$candidate" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || continue
+              (( BASH_REMATCH[1] > max_rc )) && max_rc="${BASH_REMATCH[1]}"
+            done < <(git -C gitops for-each-ref --format='%(refname)' "refs/remotes/origin/gitops/nexum-webct-${VERSION}-rc.*")
+
+            release_id="${VERSION}-rc.$((max_rc + 1))"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "branch=$RELEASE_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "source_revision=$SOURCE_REVISION" >> "$GITHUB_OUTPUT"
+
+      # Create release/vX.Y.Z from the exact revision tested in WEBNT.
+      - name: Create release branch
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_BRANCH: ${{ steps.metadata.outputs.branch }}
+          SOURCE_REVISION: ${{ steps.metadata.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+
+          EXISTING="$(
+            git ls-remote --heads origin "$RELEASE_BRANCH" |
+              awk '{print $1}'
+          )"
+
+          if [[ -n "$EXISTING" ]]; then
+            [[ "$EXISTING" == "$SOURCE_REVISION" ]] || {
+              echo "$RELEASE_BRANCH already exists at another revision."
+              exit 1
+            }
+            exit 0
+          fi
+
+          git push origin "${SOURCE_REVISION}:refs/heads/${RELEASE_BRANCH}"
+
+  build-webapp:
+    if: github.event_name == 'push'
+    needs: prepare-release
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ needs.prepare-release.outputs.source_revision }}
+      image_name: webapp
+      dockerfile: Presentation/UI/Presentation.UI.WebUI/Dockerfile
+    secrets: inherit
+
+  build-internalapi:
+    if: github.event_name == 'push'
+    needs: prepare-release
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ needs.prepare-release.outputs.source_revision }}
+      image_name: internalapi
+      dockerfile: Presentation/API/Presentation.API.InternalApi/Dockerfile
+    secrets: inherit
+
+  build-externalapi:
+    if: github.event_name == 'push'
+    needs: prepare-release
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ needs.prepare-release.outputs.source_revision }}
+      image_name: externalapi
+      dockerfile: Presentation/API/Presentation.API.ExternalApi/Dockerfile
+    secrets: inherit
+
+  tag-release-candidate:
+    if: github.event_name == 'push'
+    name: Create immutable RC aliases
+    needs:
+      - prepare-release
+      - build-webapp
+      - build-internalapi
+      - build-externalapi
+    runs-on: actiontest
+    environment: webct
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          driver-opts: |
+            network=host
+          buildkitd-config-inline: |
+            [registry."${{ env.HARBOR_REGISTRY }}"]
+              insecure = true
+
+      - name: Login to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Create RC aliases from immutable digests
+        shell: bash
+        env:
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          WEBAPP_DIGEST: ${{ needs.build-webapp.outputs.digest }}
+          INTERNALAPI_DIGEST: ${{ needs.build-internalapi.outputs.digest }}
+          EXTERNALAPI_DIGEST: ${{ needs.build-externalapi.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          alias_image() {
+            local app="$1"
+            local digest="$2"
+            local repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app}"
+            local existing
+
+            existing="$(docker buildx imagetools inspect "${repository}:${RELEASE_ID}" 2>/dev/null | awk '/^Digest:/ {print $2; exit}' || true)"
+            [[ -z "$existing" || "$existing" == "$digest" ]] || { echo "RC tag conflict for $app"; exit 1; }
+            [[ -n "$existing" ]] || docker buildx imagetools create --tag "${repository}:${RELEASE_ID}" "${repository}@${digest}"
+          }
+
+          alias_image webapp "$WEBAPP_DIGEST"
+          alias_image internalapi "$INTERNALAPI_DIGEST"
+          alias_image externalapi "$EXTERNALAPI_DIGEST"
+
+  # Initial release reuses WEBNT digests; it does not rebuild.
+  deploy-initial-rc:
+    if: github.event_name == 'workflow_dispatch'
+    name: Promote WEBNT as initial RC
+    needs: prepare-release
+    uses: ./.github/workflows/promote-environment.yml
+    with:
+      source_environment: webnt
+      target_environment: webct
+      source_branch: ${{ needs.prepare-release.outputs.branch }}
+      version: ${{ needs.prepare-release.outputs.version }}
+      release_id: ${{ needs.prepare-release.outputs.release_id }}
+      release_status: candidate
+      create_catalog: true
+      target_image_tag: ${{ needs.prepare-release.outputs.release_id }}
+      expected_source_release_id: ${{ needs.prepare-release.outputs.source_release_id }}
+      expected_source_revision: ${{ needs.prepare-release.outputs.source_revision }}
+      expected_source_status: build
+    secrets: inherit
+
+  # A release branch source change is built once and proposed as the next RC.
+  deploy-updated-rc:
+    if: github.event_name == 'push'
+    name: Propose updated RC to WEBCT
+    needs:
+      - prepare-release
+      - build-webapp
+      - build-internalapi
+      - build-externalapi
+      - tag-release-candidate
+    uses: ./.github/workflows/_update-gitops-values.yml
+    with:
+      target_environment: webct
+      release_id: ${{ needs.prepare-release.outputs.release_id }}
+      release_status: candidate
+      create_catalog: true
+      artifact_set: >-
+        [
+          {"app_name":"webapp","digest":"${{ needs.build-webapp.outputs.digest }}"},
+          {"app_name":"internalapi","digest":"${{ needs.build-internalapi.outputs.digest }}"},
+          {"app_name":"externalapi","digest":"${{ needs.build-externalapi.outputs.digest }}"}
+        ]
+      image_tag: ${{ needs.prepare-release.outputs.release_id }}
+      version: ${{ needs.prepare-release.outputs.version }}
+      source_branch: ${{ needs.prepare-release.outputs.branch }}
+      source_revision: ${{ needs.prepare-release.outputs.source_revision }}
+      promoted_from: release-build
+      commit_message: "chore(nexum): propose ${{ needs.prepare-release.outputs.release_id }} to WEBCT"
+    secrets: inherit

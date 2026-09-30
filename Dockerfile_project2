@@ -1,0 +1,7 @@
+FROM alpine:3.22
+ARG GIT_SHA=unknown
+ARG SOURCE_REPO=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+LABEL org.opencontainers.image.source="${SOURCE_REPO}"
+COPY app/message.txt /app/message.txt
+CMD ["cat", "/app/message.txt"]

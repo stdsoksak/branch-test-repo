@@ -1,0 +1,20 @@
+name: CD - Test
+
+# No commit, image tag or digest input is required.
+# The current WEBND artifact is promoted as-is.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: nexum-cd
+  cancel-in-progress: false
+
+jobs:
+  promote-webnd-to-webnt:
+    uses: ./.github/workflows/promote-environment.yml
+    with:
+      source_environment: webnd
+      target_environment: webnt
+      source_branch: develop
+      expected_source_status: build
+    secrets: inherit

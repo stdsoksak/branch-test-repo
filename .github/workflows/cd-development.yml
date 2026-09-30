@@ -1,0 +1,61 @@
+name: CD - Development
+
+on:
+  push:
+    branches:
+      - develop
+
+concurrency:
+  group: nexum-cd
+  cancel-in-progress: false
+
+jobs:
+  build-webapp:
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ github.sha }}
+      image_name: webapp
+      dockerfile: Presentation/UI/Presentation.UI.WebUI/Dockerfile
+    secrets: inherit
+
+  build-internalapi:
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ github.sha }}
+      image_name: internalapi
+      dockerfile: Presentation/API/Presentation.API.InternalApi/Dockerfile
+    secrets: inherit
+
+  build-externalapi:
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ github.sha }}
+      image_name: externalapi
+      dockerfile: Presentation/API/Presentation.API.ExternalApi/Dockerfile
+    secrets: inherit
+
+  deploy-webnd:
+    name: Deploy WEBND artifact set
+    needs:
+      - build-webapp
+      - build-internalapi
+      - build-externalapi
+    uses: ./.github/workflows/_update-gitops-values.yml
+    with:
+      target_environment: webnd
+      release_id: ${{ needs.build-webapp.outputs.image_tag }}
+      release_status: build
+      create_catalog: true
+      artifact_set: >-
+        [
+          {"app_name":"webapp","digest":"${{ needs.build-webapp.outputs.digest }}"},
+          {"app_name":"internalapi","digest":"${{ needs.build-internalapi.outputs.digest }}"},
+          {"app_name":"externalapi","digest":"${{ needs.build-externalapi.outputs.digest }}"}
+        ]
+      image_tag: ${{ needs.build-webapp.outputs.image_tag }}
+      version: ${{ needs.build-webapp.outputs.image_tag }}
+      source_branch: develop
+      source_revision: ${{ github.sha }}
+      promoted_from: build
+      commit_message: "chore(nexum): deploy ${{ needs.build-webapp.outputs.image_tag }} to WEBND"
+    secrets: inherit

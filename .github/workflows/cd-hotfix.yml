@@ -1,0 +1,289 @@
+name: CD - Hotfix
+
+# Hotfix deployment starts after a hotfix/* pull request is merged to main.
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: nexum-cd
+  cancel-in-progress: false
+
+env:
+  HARBOR_REGISTRY: harbor.pegasusum.com
+  HARBOR_PROJECT: nexum_backend
+
+jobs:
+  metadata:
+    name: Detect Hotfix
+    if: >
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'hotfix/')
+    runs-on: actiontest
+
+    outputs:
+      version: ${{ steps.hotfix.outputs.version }}
+      merge_revision: ${{ steps.hotfix.outputs.merge_revision }}
+
+    steps:
+      - name: Parse hotfix branch
+        id: hotfix
+        shell: bash
+        env:
+          HOTFIX_BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGE_REVISION: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$HOTFIX_BRANCH" =~ ^hotfix/(v[0-9]+\.[0-9]+\.[0-9]+)(-.+)?$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            echo "Expected hotfix/v1.2.1-TICKET"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "merge_revision=$MERGE_REVISION" >> "$GITHUB_OUTPUT"
+
+  build-webapp:
+    name: Build Hotfix webapp
+    needs: metadata
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ needs.metadata.outputs.merge_revision }}
+      image_name: webapp
+      dockerfile: Presentation/UI/Presentation.UI.WebUI/Dockerfile
+    secrets: inherit
+
+  build-internalapi:
+    name: Build Hotfix internalapi
+    needs: metadata
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ needs.metadata.outputs.merge_revision }}
+      image_name: internalapi
+      dockerfile: Presentation/API/Presentation.API.InternalApi/Dockerfile
+    secrets: inherit
+
+  build-externalapi:
+    name: Build Hotfix externalapi
+    needs: metadata
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      source_revision: ${{ needs.metadata.outputs.merge_revision }}
+      image_name: externalapi
+      dockerfile: Presentation/API/Presentation.API.ExternalApi/Dockerfile
+    secrets: inherit
+
+  tag-images:
+    name: Tag Hotfix Images
+    needs:
+      - metadata
+      - build-webapp
+      - build-internalapi
+      - build-externalapi
+    runs-on: actiontest
+    environment: prod
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          driver-opts: |
+            network=host
+          buildkitd-config-inline: |
+            [registry."${{ env.HARBOR_REGISTRY }}"]
+              insecure = true
+
+      - name: Login to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Add hotfix semantic tags
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          WEBAPP_DIGEST: ${{ needs.build-webapp.outputs.digest }}
+          INTERNALAPI_DIGEST: ${{ needs.build-internalapi.outputs.digest }}
+          EXTERNALAPI_DIGEST: ${{ needs.build-externalapi.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          alias_image() {
+            local app="$1"
+            local digest="$2"
+            local repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app}"
+            local existing
+
+            existing="$(docker buildx imagetools inspect "${repository}:${VERSION}" 2>/dev/null | awk '/^Digest:/ {print $2; exit}' || true)"
+            [[ -z "$existing" || "$existing" == "$digest" ]] || { echo "Hotfix tag conflict for $app"; exit 1; }
+            [[ -n "$existing" ]] || docker buildx imagetools create --tag "${repository}:${VERSION}" "${repository}@${digest}"
+          }
+
+          alias_image webapp "$WEBAPP_DIGEST"
+          alias_image internalapi "$INTERNALAPI_DIGEST"
+          alias_image externalapi "$EXTERNALAPI_DIGEST"
+
+  deploy-production:
+    name: Deploy Hotfix artifact set
+    needs:
+      - metadata
+      - build-webapp
+      - build-internalapi
+      - build-externalapi
+      - tag-images
+    uses: ./.github/workflows/_update-gitops-values.yml
+    with:
+      target_environment: prod
+      release_id: ${{ needs.metadata.outputs.version }}
+      release_status: final
+      create_catalog: true
+      artifact_set: >-
+        [
+          {"app_name":"webapp","digest":"${{ needs.build-webapp.outputs.digest }}"},
+          {"app_name":"internalapi","digest":"${{ needs.build-internalapi.outputs.digest }}"},
+          {"app_name":"externalapi","digest":"${{ needs.build-externalapi.outputs.digest }}"}
+        ]
+      image_tag: ${{ needs.metadata.outputs.version }}
+      version: ${{ needs.metadata.outputs.version }}
+      source_branch: main
+      source_revision: ${{ needs.metadata.outputs.merge_revision }}
+      promoted_from: hotfix
+      commit_message: "chore(nexum): deploy hotfix ${{ needs.metadata.outputs.version }} to Production"
+    secrets: inherit
+
+  # peter-evans/create-pull-request replaces the gh CLI requirement.
+  backport:
+    name: Open Backport PR to Develop
+    needs:
+      - metadata
+      - deploy-production
+    runs-on: actiontest
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Apply hotfix diff
+        shell: bash
+        env:
+          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+          MERGE_REVISION: ${{ needs.metadata.outputs.merge_revision }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin "$BASE_REVISION" "$MERGE_REVISION"
+
+          if ! git diff --binary "$BASE_REVISION" "$MERGE_REVISION" | git apply --3way; then
+            echo "Automatic backport has conflicts."
+            exit 1
+          fi
+
+      - name: Create backport pull request
+        uses: peter-evans/create-pull-request@v7.0.11
+        with:
+          token: ${{ github.token }}
+          branch: backport/${{ needs.metadata.outputs.version }}-to-develop
+          base: develop
+          delete-branch: true
+          commit-message: "Backport ${{ needs.metadata.outputs.version }} hotfix to develop"
+          title: "Backport ${{ needs.metadata.outputs.version }} hotfix to develop"
+          body: |
+            Backports Production hotfix ${{ needs.metadata.outputs.version }} to develop.
+
+  detect-active-releases:
+    name: Detect Active Release Branches
+    needs: metadata
+    runs-on: actiontest
+
+    outputs:
+      branches: ${{ steps.releases.outputs.branches }}
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find release branches requiring the fix
+        id: releases
+        shell: bash
+        env:
+          HOTFIX_REVISION: ${{ needs.metadata.outputs.merge_revision }}
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/release/*:refs/remotes/origin/release/*' --tags
+
+          branches='['
+          separator=''
+          while IFS= read -r ref; do
+            branch="${ref#origin/}"
+            version="${branch#release/}"
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+            git rev-parse -q --verify "refs/tags/$version" >/dev/null && continue
+            git merge-base --is-ancestor "$HOTFIX_REVISION" "$ref" && continue
+            branches="${branches}${separator}\"${branch}\""
+            separator=','
+          done < <(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/*')
+          branches="${branches}]"
+          echo "branches=$branches" >> "$GITHUB_OUTPUT"
+
+  backport-active-releases:
+    if: needs.detect-active-releases.outputs.branches != '[]'
+    name: Backport to ${{ matrix.release_branch }}
+    needs:
+      - metadata
+      - deploy-production
+      - detect-active-releases
+    runs-on: actiontest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        release_branch: ${{ fromJSON(needs.detect-active-releases.outputs.branches) }}
+
+    steps:
+      - name: Checkout active release branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.release_branch }}
+          fetch-depth: 0
+
+      - name: Apply hotfix diff
+        id: target
+        shell: bash
+        env:
+          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+          MERGE_REVISION: ${{ needs.metadata.outputs.merge_revision }}
+          RELEASE_BRANCH: ${{ matrix.release_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REVISION" "$MERGE_REVISION"
+          git diff --binary "$BASE_REVISION" "$MERGE_REVISION" | git apply --3way
+          echo "branch_name=${RELEASE_BRANCH//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release backport pull request
+        uses: peter-evans/create-pull-request@v7.0.11
+        with:
+          token: ${{ github.token }}
+          branch: backport/${{ needs.metadata.outputs.version }}-to-${{ steps.target.outputs.branch_name }}
+          base: ${{ matrix.release_branch }}
+          delete-branch: true
+          commit-message: "Backport ${{ needs.metadata.outputs.version }} hotfix to ${{ matrix.release_branch }}"
+          title: "Backport ${{ needs.metadata.outputs.version }} to ${{ matrix.release_branch }}"
+          body: |
+            Backports Production hotfix `${{ needs.metadata.outputs.version }}` to active release branch `${{ matrix.release_branch }}`.

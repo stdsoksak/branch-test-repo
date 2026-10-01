@@ -99,6 +99,7 @@ jobs:
               http = true
               insecure = true
 
+
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
         with:
@@ -226,13 +227,20 @@ jobs:
             catalog_exists=false
             if [ -f "$catalog" ]; then
               catalog_exists=true
-              [ "$(yq -r '.release.id // ""' "$catalog")" = "$WEBAPP_RELEASE_ID" ] || {
-                echo "Catalog active release differs from $WEBAPP_RELEASE_ID"
-                exit 1
-              }
-              source_revision="$(yq -r '.source.revision' "$catalog")"
-              source_status="$(yq -r '.release.status' "$catalog")"
-              catalog_tag="$(yq -r '.services.webapp.tag' "$catalog")"
+              case "$WEBAPP_RELEASE_ID" in
+                v*-rc.*)
+                  [ "$(RELEASE_ID="$WEBAPP_RELEASE_ID" yq -r '[.candidates[] | select(.id == strenv(RELEASE_ID))] | length' "$catalog")" -eq 1 ]
+                  record_selector='.candidates[] | select(.id == strenv(RELEASE_ID))'
+                  source_status=candidate
+                  ;;
+                v*)
+                  [ "$(yq -r '.final.id // ""' "$catalog")" = "$WEBAPP_RELEASE_ID" ]
+                  record_selector='.final'
+                  source_status=final
+                  ;;
+              esac
+              source_revision="$(RELEASE_ID="$WEBAPP_RELEASE_ID" yq -r "($record_selector).source.revision // \"\"" "$catalog")"
+              catalog_tag="$(RELEASE_ID="$WEBAPP_RELEASE_ID" yq -r "($record_selector).services.webapp.tag // \"\"" "$catalog")"
               [ "$catalog_tag" = "$WEBAPP_TAG" ] || { echo "Source tag differs from catalog"; exit 1; }
             else
               case "$WEBAPP_RELEASE_ID" in
@@ -269,9 +277,9 @@ jobs:
 
               printf '%s\n' "$environment_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
               if [ "$catalog_exists" = "true" ]; then
-                catalog_digest="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "$catalog")"
-                catalog_service_tag="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag' "$catalog")"
-                catalog_revision="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit' "$catalog")"
+                catalog_digest="$(RELEASE_ID="$WEBAPP_RELEASE_ID" APP_NAME="$app_name" yq -r "($record_selector).services[strenv(APP_NAME)].digest // \"\"" "$catalog")"
+                catalog_service_tag="$(RELEASE_ID="$WEBAPP_RELEASE_ID" APP_NAME="$app_name" yq -r "($record_selector).services[strenv(APP_NAME)].tag // \"\"" "$catalog")"
+                catalog_revision="$(RELEASE_ID="$WEBAPP_RELEASE_ID" APP_NAME="$app_name" yq -r "($record_selector).services[strenv(APP_NAME)].sourceCommit // \"\"" "$catalog")"
 
                 [ "$catalog_digest" = "$environment_digest" ] || { echo "$app_name digest differs from catalog"; exit 1; }
                 [ "$catalog_service_tag" = "$WEBAPP_TAG" ] || { echo "$app_name tag differs from catalog"; exit 1; }

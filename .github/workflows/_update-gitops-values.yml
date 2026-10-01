@@ -119,6 +119,33 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Prepare catalog file ownership
+        if: inputs.create_catalog
+        id: prepare-catalog
+        shell: bash
+        env:
+          CATALOG_ID: ${{ inputs.catalog_id }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+
+          catalog_id="$CATALOG_ID"
+          [[ -n "$catalog_id" ]] || catalog_id="$RELEASE_ID"
+          [[ "$catalog_id" =~ ^(git-[0-9a-f]{7,40}|v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?)$ ]]
+
+          catalog_path="gitops/${GITOPS_RELEASE_PATH}/${catalog_id}.yaml"
+          mkdir -p "$(dirname "$catalog_path")"
+          if [[ -e "$catalog_path" ]]; then
+            [[ -s "$catalog_path" ]] || {
+              echo "Existing catalog is empty: $catalog_path"
+              exit 1
+            }
+            echo "preexisting=true" >> "$GITHUB_OUTPUT"
+          else
+            touch "$catalog_path"
+            echo "preexisting=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Validate artifact set and update values
         id: update-values
         uses: mikefarah/yq@v4.53.6
@@ -129,6 +156,7 @@ jobs:
           CREATE_CATALOG: ${{ inputs.create_catalog }}
           CATALOG_ID: ${{ inputs.catalog_id }}
           UPDATE_CATALOG: ${{ inputs.update_catalog }}
+          CATALOG_PREEXISTING: ${{ steps.prepare-catalog.outputs.preexisting }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           VERSION: ${{ inputs.version }}
           TARGET_ENV: ${{ inputs.target_environment }}
@@ -217,7 +245,7 @@ jobs:
               mkdir -p "gitops/$GITOPS_RELEASE_PATH"
               write_catalog=true
 
-              if [ -f "gitops/$catalog_path" ]; then
+              if [ "$CATALOG_PREEXISTING" = "true" ]; then
                 [ "$(yq -r '.apiVersion' "gitops/$catalog_path")" = "nexum.pegasusum.com/v1" ]
                 [ "$(yq -r '.kind' "gitops/$catalog_path")" = "Release" ]
                 created_at="$(yq -r '.release.createdAt // ""' "gitops/$catalog_path")"

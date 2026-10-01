@@ -148,8 +148,8 @@ jobs:
             set -eu
             catalog="gitops/$GITOPS_RELEASE_PATH/$VERSION.yaml"
             if [ -f "$catalog" ]; then
-              echo "release_id=$(yq -r '.release.id // ""' "$catalog")" >> "$GITHUB_OUTPUT"
-              echo "status=$(yq -r '.release.status // ""' "$catalog")" >> "$GITHUB_OUTPUT"
+              echo "release_id=$(yq -r '.activeCandidate // ""' "$catalog")" >> "$GITHUB_OUTPUT"
+              echo "status=$(yq -r '.status // ""' "$catalog")" >> "$GITHUB_OUTPUT"
             else
               echo "release_id=" >> "$GITHUB_OUTPUT"
               echo "status=" >> "$GITHUB_OUTPUT"
@@ -313,6 +313,7 @@ jobs:
             [registry."${{ env.HARBOR_REGISTRY }}"]
               http = true
               insecure = true
+
 
       - name: Create RC aliases from immutable digests
         shell: bash

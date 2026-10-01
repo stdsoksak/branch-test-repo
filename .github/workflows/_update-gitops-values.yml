@@ -242,116 +242,169 @@ jobs:
               catalog_id="$CATALOG_ID"
               [ -n "$catalog_id" ] || catalog_id="$RELEASE_ID"
               catalog_path="$GITOPS_RELEASE_PATH/$catalog_id.yaml"
-              mkdir -p "gitops/$GITOPS_RELEASE_PATH"
-              write_catalog=true
+              catalog="gitops/$catalog_path"
+              now="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              webapp_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "webapp") | .digest')"
+              internalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "internalapi") | .digest')"
+              externalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "externalapi") | .digest')"
 
-              if [ "$CATALOG_PREEXISTING" = "true" ]; then
-                [ "$(yq -r '.apiVersion' "gitops/$catalog_path")" = "nexum.pegasusum.com/v1" ]
-                [ "$(yq -r '.kind' "gitops/$catalog_path")" = "Release" ]
-                created_at="$(yq -r '.release.createdAt // ""' "gitops/$catalog_path")"
-                [ -n "$created_at" ]
-                existing_id="$(yq -r '.release.id // ""' "gitops/$catalog_path")"
-                existing_status="$(yq -r '.release.status // ""' "gitops/$catalog_path")"
-
-                if [ "$existing_id" = "$RELEASE_ID" ]; then
-                  [ "$existing_status" = "$RELEASE_STATUS" ]
-                  [ "$(yq -r '.source.branch' "gitops/$catalog_path")" = "$SOURCE_BRANCH" ]
-                  [ "$(yq -r '.source.revision' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
-
-                  for app_name in webapp internalapi externalapi; do
-                    expected_digest="$(
-                      printf '%s\n' "$ARTIFACT_SET" |
-                        APP_NAME="$app_name" yq -r '.[] | select(.app_name == strenv(APP_NAME)) | .digest'
-                    )"
-                    [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "gitops/$catalog_path")" = "$expected_digest" ]
-                    [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
-                    [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag' "gitops/$catalog_path")" = "$IMAGE_TAG" ]
-                    [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].repository' "gitops/$catalog_path")" = "$HARBOR_REGISTRY/$HARBOR_PROJECT/$app_name" ]
-                  done
-                  write_catalog=false
-                elif [ "$UPDATE_CATALOG" = "true" ] && [ "$RELEASE_STATUS" = "candidate" ]; then
-                  [ "$existing_status" = "candidate" ]
-                  escaped_catalog_id="$(printf '%s' "$catalog_id" | sed 's/\./\\./g')"
-                  printf '%s\n' "$existing_id" | grep -Eq "^${escaped_catalog_id}-rc\.[1-9][0-9]*$"
-                  printf '%s\n' "$RELEASE_ID" | grep -Eq "^${escaped_catalog_id}-rc\.[1-9][0-9]*$"
-                  existing_rc="${existing_id##*.}"
-                  next_rc="${RELEASE_ID##*.}"
-                  [ "$next_rc" -gt "$existing_rc" ]
-                  [ "$(yq -r '.source.branch' "gitops/$catalog_path")" = "$SOURCE_BRANCH" ]
-                elif [ "$UPDATE_CATALOG" = "true" ] && [ "$RELEASE_STATUS" = "final" ]; then
-                  [ "$existing_status" = "candidate" ]
-                  [ "$RELEASE_ID" = "$catalog_id" ]
-                  escaped_catalog_id="$(printf '%s' "$catalog_id" | sed 's/\./\\./g')"
-                  printf '%s\n' "$existing_id" | grep -Eq "^${escaped_catalog_id}-rc\.[1-9][0-9]*$"
-                  [ "$(yq -r '.source.revision' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
-
-                  for app_name in webapp internalapi externalapi; do
-                    expected_digest="$(
-                      printf '%s\n' "$ARTIFACT_SET" |
-                        APP_NAME="$app_name" yq -r '.[] | select(.app_name == strenv(APP_NAME)) | .digest'
-                    )"
-                    [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "gitops/$catalog_path")" = "$expected_digest" ]
-                  done
-                else
-                  echo "Catalog $catalog_id cannot move from $existing_id ($existing_status) to $RELEASE_ID ($RELEASE_STATUS)."
-                  exit 1
-                fi
-              else
-                created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              if [ "$CATALOG_PREEXISTING" != "true" ]; then
+                CATALOG_ID="$catalog_id" CREATED_AT="$now" yq -n '
+                  {
+                    "version": strenv(CATALOG_ID),
+                    "status": "candidate",
+                    "activeCandidate": null,
+                    "createdAt": strenv(CREATED_AT),
+                    "updatedAt": strenv(CREATED_AT),
+                    "candidates": [],
+                    "final": null
+                  }
+                ' > "$catalog"
               fi
 
-              if [ "$write_catalog" = "true" ]; then
-                updated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-                run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-                webapp_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "webapp") | .digest')"
-                internalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "internalapi") | .digest')"
-                externalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "externalapi") | .digest')"
+              [ "$(yq -r '.version // ""' "$catalog")" = "$catalog_id" ]
+              [ "$(yq -r '.apiVersion // ""' "$catalog")" = "" ]
+              [ "$(yq -r '.kind // ""' "$catalog")" = "" ]
+              [ -n "$(yq -r '.createdAt // ""' "$catalog")" ]
+              yq -e '(.candidates | tag == "!!seq") and (.final == null or (.final | tag == "!!map"))' "$catalog" >/dev/null
 
-                CATALOG_ID="$catalog_id" CREATED_AT="$created_at" UPDATED_AT="$updated_at" RUN_URL="$run_url" \
-                WEBAPP_DIGEST="$webapp_digest" INTERNALAPI_DIGEST="$internalapi_digest" \
-                EXTERNALAPI_DIGEST="$externalapi_digest" yq -n '
-                  {
-                    "apiVersion": "nexum.pegasusum.com/v1",
-                    "kind": "Release",
-                    "release": {
+              validate_record() {
+                selector="$1"
+                [ "$(yq -r "($selector).id // \"\"" "$catalog")" = "$RELEASE_ID" ]
+                [ "$(yq -r "($selector).source.branch // \"\"" "$catalog")" = "$SOURCE_BRANCH" ]
+                [ "$(yq -r "($selector).source.revision // \"\"" "$catalog")" = "$SOURCE_REVISION" ]
+
+                for app_name in webapp internalapi externalapi; do
+                  expected_digest="$(
+                    printf '%s\n' "$ARTIFACT_SET" |
+                      APP_NAME="$app_name" yq -r '.[] | select(.app_name == strenv(APP_NAME)) | .digest'
+                  )"
+                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].digest // \"\"" "$catalog")" = "$expected_digest" ]
+                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].sourceCommit // \"\"" "$catalog")" = "$SOURCE_REVISION" ]
+                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].tag // \"\"" "$catalog")" = "$IMAGE_TAG" ]
+                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].repository // \"\"" "$catalog")" = "$HARBOR_REGISTRY/$HARBOR_PROJECT/$app_name" ]
+                done
+              }
+
+              if [ "$RELEASE_STATUS" = "candidate" ]; then
+                candidate_count="$(RELEASE_ID="$RELEASE_ID" yq -r '[.candidates[] | select(.id == strenv(RELEASE_ID))] | length' "$catalog")"
+                [ "$candidate_count" -le 1 ]
+
+                if [ "$candidate_count" -eq 1 ]; then
+                  validate_record '.candidates[] | select(.id == strenv(RELEASE_ID))'
+                else
+                  [ "$UPDATE_CATALOG" = "true" ]
+                  [ "$(yq -r '.status' "$catalog")" != "final" ]
+                  active_candidate="$(yq -r '.activeCandidate // ""' "$catalog")"
+                  if [ -n "$active_candidate" ]; then
+                    escaped_catalog_id="$(printf '%s' "$catalog_id" | sed 's/\./\\./g')"
+                    printf '%s\n' "$active_candidate" | grep -Eq "^${escaped_catalog_id}-rc\.[1-9][0-9]*$"
+                    printf '%s\n' "$RELEASE_ID" | grep -Eq "^${escaped_catalog_id}-rc\.[1-9][0-9]*$"
+                    [ "${RELEASE_ID##*.}" -gt "${active_candidate##*.}" ]
+                  fi
+
+                  UPDATED_AT="$now" RUN_URL="$run_url" WEBAPP_DIGEST="$webapp_digest" \
+                  INTERNALAPI_DIGEST="$internalapi_digest" EXTERNALAPI_DIGEST="$externalapi_digest" yq -i '
+                    .status = "candidate" |
+                    .activeCandidate = strenv(RELEASE_ID) |
+                    .updatedAt = strenv(UPDATED_AT) |
+                    .candidates += [{
                       "id": strenv(RELEASE_ID),
-                      "catalogId": strenv(CATALOG_ID),
-                      "status": strenv(RELEASE_STATUS),
-                      "createdAt": strenv(CREATED_AT),
-                      "updatedAt": strenv(UPDATED_AT)
-                    },
-                    "source": {
-                      "branch": strenv(SOURCE_BRANCH),
-                      "revision": strenv(SOURCE_REVISION)
-                    },
-                    "workflow": {
-                      "repository": strenv(GITHUB_REPOSITORY),
-                      "runId": strenv(GITHUB_RUN_ID),
-                      "runAttempt": strenv(GITHUB_RUN_ATTEMPT),
-                      "runUrl": strenv(RUN_URL)
-                    },
-                    "services": {
-                      "webapp": {
-                        "sourceCommit": strenv(SOURCE_REVISION),
-                        "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/webapp",
-                        "digest": strenv(WEBAPP_DIGEST),
-                        "tag": strenv(IMAGE_TAG)
+                      "createdAt": strenv(UPDATED_AT),
+                      "source": {
+                        "branch": strenv(SOURCE_BRANCH),
+                        "revision": strenv(SOURCE_REVISION)
                       },
-                      "internalapi": {
-                        "sourceCommit": strenv(SOURCE_REVISION),
-                        "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/internalapi",
-                        "digest": strenv(INTERNALAPI_DIGEST),
-                        "tag": strenv(IMAGE_TAG)
+                      "workflow": {
+                        "repository": strenv(GITHUB_REPOSITORY),
+                        "runId": strenv(GITHUB_RUN_ID),
+                        "runAttempt": strenv(GITHUB_RUN_ATTEMPT),
+                        "runUrl": strenv(RUN_URL)
                       },
-                      "externalapi": {
-                        "sourceCommit": strenv(SOURCE_REVISION),
-                        "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/externalapi",
-                        "digest": strenv(EXTERNALAPI_DIGEST),
-                        "tag": strenv(IMAGE_TAG)
+                      "services": {
+                        "webapp": {
+                          "sourceCommit": strenv(SOURCE_REVISION),
+                          "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/webapp",
+                          "digest": strenv(WEBAPP_DIGEST),
+                          "tag": strenv(IMAGE_TAG)
+                        },
+                        "internalapi": {
+                          "sourceCommit": strenv(SOURCE_REVISION),
+                          "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/internalapi",
+                          "digest": strenv(INTERNALAPI_DIGEST),
+                          "tag": strenv(IMAGE_TAG)
+                        },
+                        "externalapi": {
+                          "sourceCommit": strenv(SOURCE_REVISION),
+                          "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/externalapi",
+                          "digest": strenv(EXTERNALAPI_DIGEST),
+                          "tag": strenv(IMAGE_TAG)
+                        }
+                      }
+                    }]
+                  ' "$catalog"
+                fi
+              else
+                [ "$RELEASE_ID" = "$catalog_id" ]
+                if [ "$(yq -r '.final.id // ""' "$catalog")" = "$RELEASE_ID" ]; then
+                  validate_record '.final'
+                else
+                  [ "$UPDATE_CATALOG" = "true" ] || [ "$(yq -r '.candidates | length' "$catalog")" -eq 0 ]
+                  [ "$(yq -r '.final == null' "$catalog")" = "true" ]
+
+                  active_candidate="$(yq -r '.activeCandidate // ""' "$catalog")"
+                  if [ -n "$active_candidate" ]; then
+                    [ "$(RELEASE_ID="$active_candidate" yq -r '(.candidates[] | select(.id == strenv(RELEASE_ID))).source.revision // ""' "$catalog")" = "$SOURCE_REVISION" ]
+                    for app_name in webapp internalapi externalapi; do
+                      expected_digest="$(
+                        printf '%s\n' "$ARTIFACT_SET" |
+                          APP_NAME="$app_name" yq -r '.[] | select(.app_name == strenv(APP_NAME)) | .digest'
+                      )"
+                      [ "$(RELEASE_ID="$active_candidate" APP_NAME="$app_name" yq -r '(.candidates[] | select(.id == strenv(RELEASE_ID))).services[strenv(APP_NAME)].digest // ""' "$catalog")" = "$expected_digest" ]
+                    done
+                  fi
+
+                  UPDATED_AT="$now" RUN_URL="$run_url" WEBAPP_DIGEST="$webapp_digest" \
+                  INTERNALAPI_DIGEST="$internalapi_digest" EXTERNALAPI_DIGEST="$externalapi_digest" yq -i '
+                    .status = "final" |
+                    .updatedAt = strenv(UPDATED_AT) |
+                    .final = {
+                      "id": strenv(RELEASE_ID),
+                      "createdAt": strenv(UPDATED_AT),
+                      "source": {
+                        "branch": strenv(SOURCE_BRANCH),
+                        "revision": strenv(SOURCE_REVISION)
+                      },
+                      "workflow": {
+                        "repository": strenv(GITHUB_REPOSITORY),
+                        "runId": strenv(GITHUB_RUN_ID),
+                        "runAttempt": strenv(GITHUB_RUN_ATTEMPT),
+                        "runUrl": strenv(RUN_URL)
+                      },
+                      "services": {
+                        "webapp": {
+                          "sourceCommit": strenv(SOURCE_REVISION),
+                          "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/webapp",
+                          "digest": strenv(WEBAPP_DIGEST),
+                          "tag": strenv(IMAGE_TAG)
+                        },
+                        "internalapi": {
+                          "sourceCommit": strenv(SOURCE_REVISION),
+                          "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/internalapi",
+                          "digest": strenv(INTERNALAPI_DIGEST),
+                          "tag": strenv(IMAGE_TAG)
+                        },
+                        "externalapi": {
+                          "sourceCommit": strenv(SOURCE_REVISION),
+                          "repository": strenv(HARBOR_REGISTRY) + "/" + strenv(HARBOR_PROJECT) + "/externalapi",
+                          "digest": strenv(EXTERNALAPI_DIGEST),
+                          "tag": strenv(IMAGE_TAG)
+                        }
                       }
                     }
-                  }
-                ' > "gitops/$catalog_path"
+                  ' "$catalog"
+                fi
               fi
 
               file_pattern="${file_pattern},${catalog_path}"

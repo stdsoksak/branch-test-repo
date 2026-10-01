@@ -1,1 +1,1 @@
-branch-promotion-test: release v1.0.0 candidate fix test
+branch-promotion-test: release v1.0.0 candidate fix test 2 (candidate append verification)

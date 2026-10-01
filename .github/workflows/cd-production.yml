@@ -10,7 +10,6 @@ on:
   repository_dispatch:
     types:
       - nexum-production-deployed
-
 permissions:
   contents: write
 
@@ -19,8 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: registry.kube-system.svc.cluster.local:80
-  REGISTRY_PROJECT: nexum
+  HARBOR_REGISTRY: registry.kube-system.svc.cluster.local:80
+  HARBOR_PROJECT: nexum
   GITOPS_OWNER: stdsoksak
   GITOPS_REPOSITORY: test-gitops
   GITOPS_BRANCH: main
@@ -87,8 +86,9 @@ jobs:
             set -eu
             escaped_version="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
             printf '%s\n' "$CANDIDATE_ID" | grep -Eq "^${escaped_version}-rc\.[1-9][0-9]*$"
-            catalog="gitops/$GITOPS_RELEASE_PATH/$CANDIDATE_ID.yaml"
+            catalog="gitops/$GITOPS_RELEASE_PATH/$EXPECTED_VERSION.yaml"
             [ -f "$catalog" ]
+            [ "$(yq -r '.release.id // ""' "$catalog")" = "$CANDIDATE_ID" ]
             [ "$(yq -r '.release.status' "$catalog")" = "candidate" ]
             source_revision="$(yq -r '.source.revision // ""' "$catalog")"
             printf '%s\n' "$source_revision" | grep -Eq '^[0-9a-f]{40}$'
@@ -107,6 +107,8 @@ jobs:
       release_id: ${{ needs.finalize-release.outputs.version }}
       release_status: final
       create_catalog: true
+      catalog_id: ${{ needs.finalize-release.outputs.version }}
+      update_catalog: true
       target_image_tag: ${{ needs.finalize-release.outputs.version }}
       expected_source_release_id: ${{ needs.finalize-release.outputs.candidate_id }}
       expected_source_revision: ${{ needs.finalize-release.outputs.source_revision }}
@@ -176,11 +178,11 @@ jobs:
           driver-opts: |
             network=host
           buildkitd-config-inline: |
-            [registry."${{ env.REGISTRY }}"]
+            [registry."${{ env.HARBOR_REGISTRY }}"]
               http = true
               insecure = true
 
-      - name: Verify final Registry aliases
+      - name: Verify final Harbor aliases
         shell: bash
         env:
           VERSION: ${{ steps.release.outputs.version }}
@@ -195,8 +197,8 @@ jobs:
               internalapi) expected="$INTERNALAPI_DIGEST" ;;
               externalapi) expected="$EXTERNALAPI_DIGEST" ;;
             esac
-            actual="$(docker buildx imagetools inspect "${REGISTRY}/${REGISTRY_PROJECT}/${app_name}:${VERSION}" | awk '/^Digest:/ {print $2; exit}')"
-            [[ "$actual" == "$expected" ]] || { echo "$app_name Registry digest mismatch"; exit 1; }
+            actual="$(docker buildx imagetools inspect "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app_name}:${VERSION}" | awk '/^Digest:/ {print $2; exit}')"
+            [[ "$actual" == "$expected" ]] || { echo "$app_name Harbor digest mismatch"; exit 1; }
           done
 
       - name: Checkout catalog source revision

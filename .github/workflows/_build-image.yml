@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       image_name:
-        description: Target image name
+        description: Harbor image name
         required: true
         type: string
       dockerfile:
@@ -22,8 +22,8 @@ on:
         value: ${{ jobs.build.outputs.digest }}
 
 env:
-  REGISTRY: registry.kube-system.svc.cluster.local:80
-  REGISTRY_PROJECT: nexum
+  HARBOR_REGISTRY: registry.kube-system.svc.cluster.local:80
+  HARBOR_PROJECT: nexum
 
 jobs:
   build:
@@ -55,7 +55,7 @@ jobs:
           driver-opts: |
             network=host
           buildkitd-config-inline: |
-            [registry."${{ env.REGISTRY }}"]
+            [registry."${{ env.HARBOR_REGISTRY }}"]
               http = true
               insecure = true
 
@@ -65,7 +65,7 @@ jobs:
         with:
           context: .
           file: ${{ inputs.dockerfile }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.REGISTRY_PROJECT }}/${{ inputs.image_name }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/${{ inputs.image_name }},push-by-digest=true,name-canonical=true,push=true
 
       # The commit alias is immutable even if the same source is built again.
       - name: Create immutable commit alias
@@ -76,7 +76,7 @@ jobs:
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          repository="${REGISTRY}/${REGISTRY_PROJECT}/${IMAGE_NAME}"
+          repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}"
           existing="$(
             docker buildx imagetools inspect "${repository}:${IMAGE_TAG}" 2>/dev/null |
               awk '/^Digest:/ {print $2; exit}' || true

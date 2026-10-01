@@ -1,7 +1,9 @@
 name: CD - Release
 
 on:
-  push:
+  pull_request:
+    types:
+      - closed
     branches:
       - "release/**"
   workflow_dispatch:
@@ -19,8 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: registry.kube-system.svc.cluster.local:80
-  REGISTRY_PROJECT: nexum
+  HARBOR_REGISTRY: registry.kube-system.svc.cluster.local:80
+  HARBOR_PROJECT: nexum
   GITOPS_OWNER: stdsoksak
   GITOPS_REPOSITORY: test-gitops
   GITOPS_BRANCH: main
@@ -29,8 +31,8 @@ env:
 
 jobs:
   prepare-release:
-    if: github.event_name == 'workflow_dispatch' || github.event.created == false
-    name: Create Release Branch from WEBNT
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    name: Prepare Release Candidate
     runs-on: nexum-project-local
 
     outputs:
@@ -38,7 +40,7 @@ jobs:
       branch: ${{ steps.metadata.outputs.branch }}
       release_id: ${{ steps.metadata.outputs.release_id }}
       source_revision: ${{ steps.metadata.outputs.source_revision }}
-      source_release_id: ${{ steps.webnt_release.outputs.result }}
+      source_release_id: ${{ steps.webnt.outputs.release_id }}
 
     steps:
       - name: Checkout Nexum
@@ -61,6 +63,7 @@ jobs:
         shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          PR_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
 
@@ -68,7 +71,7 @@ jobs:
             VERSION="${INPUT_VERSION#v}"
             RELEASE_BRANCH="release/v${VERSION}"
           else
-            RELEASE_BRANCH="$GITHUB_REF_NAME"
+            RELEASE_BRANCH="$PR_BASE_BRANCH"
             [[ "$RELEASE_BRANCH" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
               echo "Release branch must look like release/v1.2.0"
               exit 1
@@ -135,29 +138,51 @@ jobs:
             exit 1
           fi
 
-      - name: Read WEBNT release ID
-        if: github.event_name == 'workflow_dispatch'
-        id: webnt_release
-        uses: mikefarah/yq@v4.53.6
-        with:
-          cmd: yq -r '.deployment.labels."nexum.pegasusum.com/release-id" // ""' 'gitops/${{ env.GITOPS_PROJECT_PATH }}/webnt/webapp/values.yaml'
-
-      - name: Read WEBNT source revision from catalog
-        if: github.event_name == 'workflow_dispatch'
-        id: webnt_source
+      - name: Read current release catalog
+        id: current_catalog
         uses: mikefarah/yq@v4.53.6
         env:
-          RELEASE_ID: ${{ steps.webnt_release.outputs.result }}
+          VERSION: ${{ steps.release.outputs.version }}
         with:
           cmd: |
             set -eu
-            printf '%s\n' "$RELEASE_ID" | grep -Eq '^git-[0-9a-f]{7,40}$'
-            catalog="gitops/$GITOPS_RELEASE_PATH/$RELEASE_ID.yaml"
+            catalog="gitops/$GITOPS_RELEASE_PATH/$VERSION.yaml"
             if [ -f "$catalog" ]; then
-              echo "source_revision=$(yq -r '.source.revision // ""' "$catalog")" >> "$GITHUB_OUTPUT"
+              echo "release_id=$(yq -r '.release.id // ""' "$catalog")" >> "$GITHUB_OUTPUT"
+              echo "status=$(yq -r '.release.status // ""' "$catalog")" >> "$GITHUB_OUTPUT"
             else
-              echo "source_revision=$(yq -r '.deployment.labels."nexum.pegasusum.com/source-revision" // ""' 'gitops/${{ env.GITOPS_PROJECT_PATH }}/webnt/webapp/values.yaml')" >> "$GITHUB_OUTPUT"
+              echo "release_id=" >> "$GITHUB_OUTPUT"
+              echo "status=" >> "$GITHUB_OUTPUT"
             fi
+
+      - name: Read WEBNT build metadata
+        if: github.event_name == 'workflow_dispatch'
+        id: webnt
+        uses: mikefarah/yq@v4.53.6
+        with:
+          cmd: |
+            set -eu
+
+            release_id=""
+            source_revision=""
+            for app_name in webapp internalapi externalapi; do
+              values="gitops/$GITOPS_PROJECT_PATH/webnt/$app_name/values.yaml"
+              app_release_id="$(yq -r '.deployment.labels."nexum.pegasusum.com/release-id" // ""' "$values")"
+              app_revision="$(yq -r '.deployment.labels."nexum.pegasusum.com/source-revision" // ""' "$values")"
+
+              if [ -z "$release_id" ]; then
+                release_id="$app_release_id"
+                source_revision="$app_revision"
+              else
+                [ "$app_release_id" = "$release_id" ] || { echo "$app_name release ID differs"; exit 1; }
+                [ "$app_revision" = "$source_revision" ] || { echo "$app_name source revision differs"; exit 1; }
+              fi
+            done
+
+            printf '%s\n' "$release_id" | grep -Eq '^git-[0-9a-f]{7,40}$'
+            printf '%s\n' "$source_revision" | grep -Eq '^[0-9a-f]{40,64}$'
+            echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+            echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release candidate metadata
         id: metadata
@@ -165,35 +190,43 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.version }}
           RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
-          WEBNT_RELEASE_ID: ${{ steps.webnt_release.outputs.result }}
-          WEBNT_SOURCE_REVISION: ${{ steps.webnt_source.outputs.source_revision }}
+          CURRENT_RELEASE_ID: ${{ steps.current_catalog.outputs.release_id }}
+          CURRENT_STATUS: ${{ steps.current_catalog.outputs.status }}
+          MERGE_REVISION: ${{ github.event.pull_request.merge_commit_sha }}
+          WEBNT_SOURCE_REVISION: ${{ steps.webnt.outputs.source_revision }}
         run: |
           set -euo pipefail
 
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            [[ "$WEBNT_RELEASE_ID" == git-* ]] || {
-              echo "WEBNT must reference a git-* build catalog entry."
-              exit 1
-            }
             SOURCE_REVISION="$WEBNT_SOURCE_REVISION"
-            git fetch origin develop
             git cat-file -e "${SOURCE_REVISION}^{commit}"
-            git merge-base --is-ancestor "$SOURCE_REVISION" origin/develop
           else
-            SOURCE_REVISION="$GITHUB_SHA"
+            [[ "$MERGE_REVISION" =~ ^[0-9a-f]{40,64}$ ]]
+            git fetch origin "$MERGE_REVISION"
+            git cat-file -e "${MERGE_REVISION}^{commit}"
+            SOURCE_REVISION="$MERGE_REVISION"
           fi
+
+          [[ -z "$CURRENT_STATUS" || "$CURRENT_STATUS" == "candidate" ]] || {
+            echo "$VERSION is already finalized."
+            exit 1
+          }
 
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             release_id="${VERSION}-rc.1"
+            [[ -z "$CURRENT_RELEASE_ID" || "$CURRENT_RELEASE_ID" == "$release_id" ]] || {
+              echo "$VERSION already has active candidate $CURRENT_RELEASE_ID."
+              exit 1
+            }
           else
             max_rc=0
-            for catalog in "gitops/$GITOPS_RELEASE_PATH/${VERSION}-rc."*.yaml; do
-              [[ -e "$catalog" ]] || continue
-              candidate="${catalog##*/}"
-              candidate="${candidate%.yaml}"
-              [[ "$candidate" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || continue
-              (( BASH_REMATCH[1] > max_rc )) && max_rc="${BASH_REMATCH[1]}"
-            done
+            if [[ -n "$CURRENT_RELEASE_ID" ]]; then
+              [[ "$CURRENT_RELEASE_ID" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || {
+                echo "Invalid candidate ID in $VERSION catalog: $CURRENT_RELEASE_ID"
+                exit 1
+              }
+              max_rc="${BASH_REMATCH[1]}"
+            fi
 
             while IFS= read -r ref; do
               candidate="${ref##*/gitops/nexum-webct-}"
@@ -208,8 +241,7 @@ jobs:
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
           echo "source_revision=$SOURCE_REVISION" >> "$GITHUB_OUTPUT"
 
-      # Create release/vX.Y.Z from the exact revision tested in WEBNT.
-      - name: Create release branch
+      - name: Create release branch from WEBNT revision
         if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
@@ -218,13 +250,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          EXISTING="$(
-            git ls-remote --heads origin "$RELEASE_BRANCH" |
-              awk '{print $1}'
-          )"
-
-          if [[ -n "$EXISTING" ]]; then
-            [[ "$EXISTING" == "$SOURCE_REVISION" ]] || {
+          existing="$(git ls-remote --heads origin "$RELEASE_BRANCH" | awk '{print $1}')"
+          if [[ -n "$existing" ]]; then
+            [[ "$existing" == "$SOURCE_REVISION" ]] || {
               echo "$RELEASE_BRANCH already exists at another revision."
               exit 1
             }
@@ -234,7 +262,7 @@ jobs:
           git push origin "${SOURCE_REVISION}:refs/heads/${RELEASE_BRANCH}"
 
   build-webapp:
-    if: github.event_name == 'push'
+    if: github.event_name == 'pull_request'
     needs: prepare-release
     uses: ./.github/workflows/_build-image.yml
     with:
@@ -244,7 +272,7 @@ jobs:
     secrets: inherit
 
   build-internalapi:
-    if: github.event_name == 'push'
+    if: github.event_name == 'pull_request'
     needs: prepare-release
     uses: ./.github/workflows/_build-image.yml
     with:
@@ -254,7 +282,7 @@ jobs:
     secrets: inherit
 
   build-externalapi:
-    if: github.event_name == 'push'
+    if: github.event_name == 'pull_request'
     needs: prepare-release
     uses: ./.github/workflows/_build-image.yml
     with:
@@ -264,7 +292,7 @@ jobs:
     secrets: inherit
 
   tag-release-candidate:
-    if: github.event_name == 'push'
+    if: github.event_name == 'pull_request'
     name: Create immutable RC aliases
     needs:
       - prepare-release
@@ -282,7 +310,7 @@ jobs:
           driver-opts: |
             network=host
           buildkitd-config-inline: |
-            [registry."${{ env.REGISTRY }}"]
+            [registry."${{ env.HARBOR_REGISTRY }}"]
               http = true
               insecure = true
 
@@ -299,7 +327,7 @@ jobs:
           alias_image() {
             local app="$1"
             local digest="$2"
-            local repository="${REGISTRY}/${REGISTRY_PROJECT}/${app}"
+            local repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app}"
             local existing
 
             existing="$(docker buildx imagetools inspect "${repository}:${RELEASE_ID}" 2>/dev/null | awk '/^Digest:/ {print $2; exit}' || true)"
@@ -311,10 +339,9 @@ jobs:
           alias_image internalapi "$INTERNALAPI_DIGEST"
           alias_image externalapi "$EXTERNALAPI_DIGEST"
 
-  # Initial release reuses WEBNT digests; it does not rebuild.
-  deploy-initial-rc:
+  deploy-initial-release-candidate:
     if: github.event_name == 'workflow_dispatch'
-    name: Promote WEBNT as initial RC
+    name: Promote WEBNT as Initial Release Candidate
     needs: prepare-release
     uses: ./.github/workflows/promote-environment.yml
     with:
@@ -325,16 +352,17 @@ jobs:
       release_id: ${{ needs.prepare-release.outputs.release_id }}
       release_status: candidate
       create_catalog: true
+      catalog_id: ${{ needs.prepare-release.outputs.version }}
+      update_catalog: true
       target_image_tag: ${{ needs.prepare-release.outputs.release_id }}
       expected_source_release_id: ${{ needs.prepare-release.outputs.source_release_id }}
       expected_source_revision: ${{ needs.prepare-release.outputs.source_revision }}
       expected_source_status: build
     secrets: inherit
 
-  # A release branch source change is built once and proposed as the next RC.
-  deploy-updated-rc:
-    if: github.event_name == 'push'
-    name: Propose updated RC to WEBCT
+  deploy-updated-release-candidate:
+    if: github.event_name == 'pull_request'
+    name: Propose Updated Release Candidate to WEBCT
     needs:
       - prepare-release
       - build-webapp
@@ -347,6 +375,8 @@ jobs:
       release_id: ${{ needs.prepare-release.outputs.release_id }}
       release_status: candidate
       create_catalog: true
+      catalog_id: ${{ needs.prepare-release.outputs.version }}
+      update_catalog: true
       artifact_set: >-
         [
           {"app_name":"webapp","digest":"${{ needs.build-webapp.outputs.digest }}"},

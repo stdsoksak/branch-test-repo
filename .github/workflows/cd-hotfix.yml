@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: registry.kube-system.svc.cluster.local:80
-  REGISTRY_PROJECT: nexum
+  HARBOR_REGISTRY: registry.kube-system.svc.cluster.local:80
+  HARBOR_PROJECT: nexum
 
 jobs:
   metadata:
@@ -100,7 +100,7 @@ jobs:
           driver-opts: |
             network=host
           buildkitd-config-inline: |
-            [registry."${{ env.REGISTRY }}"]
+            [registry."${{ env.HARBOR_REGISTRY }}"]
               http = true
               insecure = true
 
@@ -117,7 +117,7 @@ jobs:
           alias_image() {
             local app="$1"
             local digest="$2"
-            local repository="${REGISTRY}/${REGISTRY_PROJECT}/${app}"
+            local repository="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app}"
             local existing
 
             existing="$(docker buildx imagetools inspect "${repository}:${VERSION}" 2>/dev/null | awk '/^Digest:/ {print $2; exit}' || true)"

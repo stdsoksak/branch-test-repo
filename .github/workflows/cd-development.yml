@@ -45,7 +45,8 @@ jobs:
       target_environment: webnd
       release_id: ${{ needs.build-webapp.outputs.image_tag }}
       release_status: build
-      create_catalog: true
+      create_catalog: false
+      create_pr: false
       artifact_set: >-
         [
           {"app_name":"webapp","digest":"${{ needs.build-webapp.outputs.digest }}"},

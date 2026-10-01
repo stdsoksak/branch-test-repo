@@ -23,6 +23,11 @@ on:
         required: false
         default: false
         type: boolean
+      create_pr:
+        description: Open a pull request instead of committing directly to GitOps base branch
+        required: false
+        default: true
+        type: boolean
       image_tag:
         required: true
         type: string
@@ -102,7 +107,7 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
           path: gitops
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Validate artifact set and update values
         id: update-values
@@ -199,92 +204,112 @@ jobs:
             catalog_path="$GITOPS_RELEASE_PATH/$RELEASE_ID.yaml"
             mkdir -p "gitops/$GITOPS_RELEASE_PATH"
 
-            if [ -f "gitops/$catalog_path" ]; then
-              [ "$(yq -r '.apiVersion' "gitops/$catalog_path")" = "nexum.pegasusum.com/v1" ]
-              [ "$(yq -r '.kind' "gitops/$catalog_path")" = "Release" ]
-              [ "$(RELEASE_ID="$RELEASE_ID" yq -r '.release.id' "gitops/$catalog_path")" = "$RELEASE_ID" ]
-              [ "$(yq -r '.release.status' "gitops/$catalog_path")" = "$RELEASE_STATUS" ]
-              [ -n "$(yq -r '.release.createdAt // ""' "gitops/$catalog_path")" ]
-              [ "$(yq -r '.source.branch' "gitops/$catalog_path")" = "$SOURCE_BRANCH" ]
-              [ "$(yq -r '.source.revision' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
-              [ -n "$(yq -r '.workflow.repository // ""' "gitops/$catalog_path")" ]
-              [ -n "$(yq -r '.workflow.runId // ""' "gitops/$catalog_path")" ]
-              [ -n "$(yq -r '.workflow.runAttempt // ""' "gitops/$catalog_path")" ]
-              [ -n "$(yq -r '.workflow.runUrl // ""' "gitops/$catalog_path")" ]
+            if [ "$CREATE_CATALOG" = "true" ]; then
+              catalog_path="$GITOPS_RELEASE_PATH/$RELEASE_ID.yaml"
+              mkdir -p "gitops/$GITOPS_RELEASE_PATH"
 
-              for app_name in webapp internalapi externalapi; do
-                expected_digest="$(
-                  printf '%s\n' "$ARTIFACT_SET" |
-                    APP_NAME="$app_name" yq -r '.[] | select(.app_name == strenv(APP_NAME)) | .digest'
-                )"
-                [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "gitops/$catalog_path")" = "$expected_digest" ]
-                [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
-                [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag' "gitops/$catalog_path")" = "$IMAGE_TAG" ]
-                [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].repository' "gitops/$catalog_path")" = "$REGISTRY/$REGISTRY_PROJECT/$app_name" ]
-              done
-            else
-              [ "$CREATE_CATALOG" = "true" ] || {
-                echo "Release catalog entry does not exist: $catalog_path"
-                exit 1
-              }
+              if [ -f "gitops/$catalog_path" ]; then
+                [ "$(yq -r '.apiVersion' "gitops/$catalog_path")" = "nexum.pegasusum.com/v1" ]
+                [ "$(yq -r '.kind' "gitops/$catalog_path")" = "Release" ]
+                [ "$(RELEASE_ID="$RELEASE_ID" yq -r '.release.id' "gitops/$catalog_path")" = "$RELEASE_ID" ]
+                [ "$(yq -r '.release.status' "gitops/$catalog_path")" = "$RELEASE_STATUS" ]
+                [ -n "$(yq -r '.release.createdAt // ""' "gitops/$catalog_path")" ]
+                [ "$(yq -r '.source.branch' "gitops/$catalog_path")" = "$SOURCE_BRANCH" ]
+                [ "$(yq -r '.source.revision' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
+                [ -n "$(yq -r '.workflow.repository // ""' "gitops/$catalog_path")" ]
+                [ -n "$(yq -r '.workflow.runId // ""' "gitops/$catalog_path")" ]
+                [ -n "$(yq -r '.workflow.runAttempt // ""' "gitops/$catalog_path")" ]
+                [ -n "$(yq -r '.workflow.runUrl // ""' "gitops/$catalog_path")" ]
 
-              created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-              run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-              webapp_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "webapp") | .digest')"
-              internalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "internalapi") | .digest')"
-              externalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "externalapi") | .digest')"
+                for app_name in webapp internalapi externalapi; do
+                  expected_digest="$(
+                    printf '%s\n' "$ARTIFACT_SET" |
+                      APP_NAME="$app_name" yq -r '.[] | select(.app_name == strenv(APP_NAME)) | .digest'
+                  )"
+                  [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "gitops/$catalog_path")" = "$expected_digest" ]
+                  [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit' "gitops/$catalog_path")" = "$SOURCE_REVISION" ]
+                  [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag' "gitops/$catalog_path")" = "$IMAGE_TAG" ]
+                  [ "$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].repository' "gitops/$catalog_path")" = "$REGISTRY/$REGISTRY_PROJECT/$app_name" ]
+                done
+              else
+                created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+                run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+                webapp_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "webapp") | .digest')"
+                internalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "internalapi") | .digest')"
+                externalapi_digest="$(printf '%s\n' "$ARTIFACT_SET" | yq -r '.[] | select(.app_name == "externalapi") | .digest')"
 
-              REGISTRY="$REGISTRY" REGISTRY_PROJECT="$REGISTRY_PROJECT" \
-              CREATED_AT="$created_at" RUN_URL="$run_url" \
-              WEBAPP_DIGEST="$webapp_digest" INTERNALAPI_DIGEST="$internalapi_digest" \
-              EXTERNALAPI_DIGEST="$externalapi_digest" yq -n '
-                {
-                  "apiVersion": "nexum.pegasusum.com/v1",
-                  "kind": "Release",
-                  "release": {
-                    "id": strenv(RELEASE_ID),
-                    "status": strenv(RELEASE_STATUS),
-                    "createdAt": strenv(CREATED_AT)
-                  },
-                  "source": {
-                    "branch": strenv(SOURCE_BRANCH),
-                    "revision": strenv(SOURCE_REVISION)
-                  },
-                  "workflow": {
-                    "repository": strenv(GITHUB_REPOSITORY),
-                    "runId": strenv(GITHUB_RUN_ID),
-                    "runAttempt": strenv(GITHUB_RUN_ATTEMPT),
-                    "runUrl": strenv(RUN_URL)
-                  },
-                  "services": {
-                    "webapp": {
-                      "sourceCommit": strenv(SOURCE_REVISION),
-                      "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/webapp",
-                      "digest": strenv(WEBAPP_DIGEST),
-                      "tag": strenv(IMAGE_TAG)
+                REGISTRY="$REGISTRY" REGISTRY_PROJECT="$REGISTRY_PROJECT" \
+                CREATED_AT="$created_at" RUN_URL="$run_url" \
+                WEBAPP_DIGEST="$webapp_digest" INTERNALAPI_DIGEST="$internalapi_digest" \
+                EXTERNALAPI_DIGEST="$externalapi_digest" yq -n '
+                  {
+                    "apiVersion": "nexum.pegasusum.com/v1",
+                    "kind": "Release",
+                    "release": {
+                      "id": strenv(RELEASE_ID),
+                      "status": strenv(RELEASE_STATUS),
+                      "createdAt": strenv(CREATED_AT)
                     },
-                    "internalapi": {
-                      "sourceCommit": strenv(SOURCE_REVISION),
-                      "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/internalapi",
-                      "digest": strenv(INTERNALAPI_DIGEST),
-                      "tag": strenv(IMAGE_TAG)
+                    "source": {
+                      "branch": strenv(SOURCE_BRANCH),
+                      "revision": strenv(SOURCE_REVISION)
                     },
-                    "externalapi": {
-                      "sourceCommit": strenv(SOURCE_REVISION),
-                      "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/externalapi",
-                      "digest": strenv(EXTERNALAPI_DIGEST),
-                      "tag": strenv(IMAGE_TAG)
+                    "workflow": {
+                      "repository": strenv(GITHUB_REPOSITORY),
+                      "runId": strenv(GITHUB_RUN_ID),
+                      "runAttempt": strenv(GITHUB_RUN_ATTEMPT),
+                      "runUrl": strenv(RUN_URL)
+                    },
+                    "services": {
+                      "webapp": {
+                        "sourceCommit": strenv(SOURCE_REVISION),
+                        "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/webapp",
+                        "digest": strenv(WEBAPP_DIGEST),
+                        "tag": strenv(IMAGE_TAG)
+                      },
+                      "internalapi": {
+                        "sourceCommit": strenv(SOURCE_REVISION),
+                        "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/internalapi",
+                        "digest": strenv(INTERNALAPI_DIGEST),
+                        "tag": strenv(IMAGE_TAG)
+                      },
+                      "externalapi": {
+                        "sourceCommit": strenv(SOURCE_REVISION),
+                        "repository": strenv(REGISTRY) + "/" + strenv(REGISTRY_PROJECT) + "/externalapi",
+                        "digest": strenv(EXTERNALAPI_DIGEST),
+                        "tag": strenv(IMAGE_TAG)
+                      }
                     }
                   }
-                }
-              ' > "gitops/$catalog_path"
+                ' > "gitops/$catalog_path"
+              fi
+
+              file_pattern="${file_pattern},${catalog_path}"
             fi
 
-            file_pattern="${file_pattern},${catalog_path}"
             printf 'file_pattern=%s\n' "$file_pattern" >> "$GITHUB_OUTPUT"
+
+      # Directly commit and push to GitOps when create_pr is false
+      - name: Commit and push directly to GitOps
+        if: inputs.create_pr == false
+        shell: bash
+        working-directory: gitops
+        env:
+          FILE_PATTERN: ${{ steps.update-values.outputs.file_pattern }}
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+          GITOPS_BRANCH: ${{ env.GITOPS_BRANCH }}
+        run: |
+          set -euo pipefail
+          git config user.name "nexum-gitops[bot]"
+          git config user.email "nexum-gitops@pegasus.local"
+          IFS=',' read -ra FILES <<< "$FILE_PATTERN"
+          git add "${FILES[@]}"
+          git commit -m "$COMMIT_MESSAGE"
+          git push origin "$GITOPS_BRANCH"
 
       # GitOps main remains protected; Argo CD sees the change only after review and merge.
       - name: Create GitOps pull request
+        if: inputs.create_pr == true
         id: create-pr
         uses: peter-evans/create-pull-request@v7.0.11
         with:

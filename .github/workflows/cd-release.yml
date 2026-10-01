@@ -153,8 +153,11 @@ jobs:
             set -eu
             printf '%s\n' "$RELEASE_ID" | grep -Eq '^git-[0-9a-f]{7,40}$'
             catalog="gitops/$GITOPS_RELEASE_PATH/$RELEASE_ID.yaml"
-            [ -f "$catalog" ]
-            echo "source_revision=$(yq -r '.source.revision // ""' "$catalog")" >> "$GITHUB_OUTPUT"
+            if [ -f "$catalog" ]; then
+              echo "source_revision=$(yq -r '.source.revision // ""' "$catalog")" >> "$GITHUB_OUTPUT"
+            else
+              echo "source_revision=$(yq -r '.deployment.labels."nexum.pegasusum.com/source-revision" // ""' 'gitops/${{ env.GITOPS_PROJECT_PATH }}/webnt/webapp/values.yaml')" >> "$GITHUB_OUTPUT"
+            fi
 
       - name: Prepare release candidate metadata
         id: metadata

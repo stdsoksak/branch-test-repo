@@ -190,41 +190,53 @@ jobs:
               grep -Eq '^(git-[0-9a-f]{7,40}|v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?)$'
 
             catalog="gitops/$GITOPS_RELEASE_PATH/$WEBAPP_RELEASE_ID.yaml"
-            [ -f "$catalog" ] || { echo "Missing source release catalog: $WEBAPP_RELEASE_ID"; exit 1; }
+            if [ -f "$catalog" ]; then
+              source_revision="$(yq -r '.source.revision' "$catalog")"
+              source_status="$(yq -r '.release.status' "$catalog")"
+              catalog_tag="$(yq -r '.services.webapp.tag' "$catalog")"
+              [ "$catalog_tag" = "$WEBAPP_TAG" ] || { echo "Source tag differs from catalog"; exit 1; }
+              [ -z "$EXPECTED_SOURCE_RELEASE_ID" ] || [ "$WEBAPP_RELEASE_ID" = "$EXPECTED_SOURCE_RELEASE_ID" ] || {
+                echo "Source release changed: expected $EXPECTED_SOURCE_RELEASE_ID, found $WEBAPP_RELEASE_ID"
+                exit 1
+              }
+              [ -z "$EXPECTED_SOURCE_REVISION" ] || [ "$source_revision" = "$EXPECTED_SOURCE_REVISION" ] || {
+                echo "Source revision changed: expected $EXPECTED_SOURCE_REVISION, found $source_revision"
+                exit 1
+              }
+              [ -z "$EXPECTED_SOURCE_STATUS" ] || [ "$source_status" = "$EXPECTED_SOURCE_STATUS" ] || {
+                echo "Source status changed: expected $EXPECTED_SOURCE_STATUS, found $source_status"
+                exit 1
+              }
 
-            source_revision="$(yq -r '.source.revision' "$catalog")"
-            source_status="$(yq -r '.release.status' "$catalog")"
-            catalog_tag="$(yq -r '.services.webapp.tag' "$catalog")"
-            [ "$catalog_tag" = "$WEBAPP_TAG" ] || { echo "Source tag differs from catalog"; exit 1; }
-            [ -z "$EXPECTED_SOURCE_RELEASE_ID" ] || [ "$WEBAPP_RELEASE_ID" = "$EXPECTED_SOURCE_RELEASE_ID" ] || {
-              echo "Source release changed: expected $EXPECTED_SOURCE_RELEASE_ID, found $WEBAPP_RELEASE_ID"
-              exit 1
-            }
-            [ -z "$EXPECTED_SOURCE_REVISION" ] || [ "$source_revision" = "$EXPECTED_SOURCE_REVISION" ] || {
-              echo "Source revision changed: expected $EXPECTED_SOURCE_REVISION, found $source_revision"
-              exit 1
-            }
-            [ -z "$EXPECTED_SOURCE_STATUS" ] || [ "$source_status" = "$EXPECTED_SOURCE_STATUS" ] || {
-              echo "Source status changed: expected $EXPECTED_SOURCE_STATUS, found $source_status"
-              exit 1
-            }
+              for app_name in webapp internalapi externalapi; do
+                case "$app_name" in
+                  webapp) environment_digest="$WEBAPP_DIGEST" ;;
+                  internalapi) environment_digest="$INTERNALAPI_DIGEST" ;;
+                  externalapi) environment_digest="$EXTERNALAPI_DIGEST" ;;
+                esac
 
-            for app_name in webapp internalapi externalapi; do
-              case "$app_name" in
-                webapp) environment_digest="$WEBAPP_DIGEST" ;;
-                internalapi) environment_digest="$INTERNALAPI_DIGEST" ;;
-                externalapi) environment_digest="$EXTERNALAPI_DIGEST" ;;
-              esac
+                printf '%s\n' "$environment_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+                catalog_digest="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "$catalog")"
+                catalog_service_tag="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag' "$catalog")"
+                catalog_revision="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit' "$catalog")"
 
-              printf '%s\n' "$environment_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
-              catalog_digest="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "$catalog")"
-              catalog_service_tag="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag' "$catalog")"
-              catalog_revision="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit' "$catalog")"
-
-              [ "$catalog_digest" = "$environment_digest" ] || { echo "$app_name digest differs from catalog"; exit 1; }
-              [ "$catalog_service_tag" = "$WEBAPP_TAG" ] || { echo "$app_name tag differs from catalog"; exit 1; }
-              [ "$catalog_revision" = "$source_revision" ] || { echo "$app_name source revision differs"; exit 1; }
-            done
+                [ "$catalog_digest" = "$environment_digest" ] || { echo "$app_name digest differs from catalog"; exit 1; }
+                [ "$catalog_service_tag" = "$WEBAPP_TAG" ] || { echo "$app_name tag differs from catalog"; exit 1; }
+                [ "$catalog_revision" = "$source_revision" ] || { echo "$app_name source revision differs"; exit 1; }
+              done
+            else
+              source_values="gitops/$GITOPS_PROJECT_PATH/${{ inputs.source_environment }}/webapp/values.yaml"
+              source_revision="$(yq -r '.deployment.labels."nexum.pegasusum.com/source-revision" // ""' "$source_values")"
+              [ -n "$source_revision" ] || { echo "Missing source revision in $source_values"; exit 1; }
+              for app_name in webapp internalapi externalapi; do
+                case "$app_name" in
+                  webapp) environment_digest="$WEBAPP_DIGEST" ;;
+                  internalapi) environment_digest="$INTERNALAPI_DIGEST" ;;
+                  externalapi) environment_digest="$EXTERNALAPI_DIGEST" ;;
+                esac
+                printf '%s\n' "$environment_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+              done
+            fi
 
             release_id="$REQUESTED_RELEASE_ID"
             version="$REQUESTED_VERSION"

@@ -10,6 +10,7 @@ on:
   repository_dispatch:
     types:
       - nexum-production-deployed
+
 permissions:
   contents: write
 
@@ -88,9 +89,9 @@ jobs:
             printf '%s\n' "$CANDIDATE_ID" | grep -Eq "^${escaped_version}-rc\.[1-9][0-9]*$"
             catalog="gitops/$GITOPS_RELEASE_PATH/$EXPECTED_VERSION.yaml"
             [ -f "$catalog" ]
-            [ "$(yq -r '.release.id // ""' "$catalog")" = "$CANDIDATE_ID" ]
-            [ "$(yq -r '.release.status' "$catalog")" = "candidate" ]
-            source_revision="$(yq -r '.source.revision // ""' "$catalog")"
+            [ "$(yq -r '.activeCandidate // ""' "$catalog")" = "$CANDIDATE_ID" ]
+            [ "$(CANDIDATE_ID="$CANDIDATE_ID" yq -r '[.candidates[] | select(.id == strenv(CANDIDATE_ID))] | length' "$catalog")" -eq 1 ]
+            source_revision="$(CANDIDATE_ID="$CANDIDATE_ID" yq -r '(.candidates[] | select(.id == strenv(CANDIDATE_ID))).source.revision // ""' "$catalog")"
             printf '%s\n' "$source_revision" | grep -Eq '^[0-9a-f]{40}$'
             echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
 
@@ -154,22 +155,23 @@ jobs:
             set -eu
             catalog="gitops/nexum/releases/$VERSION.yaml"
             [ -f "$catalog" ]
-            [ "$(yq -r '.release.status' "$catalog")" = "final" ]
+            [ "$(yq -r '.status' "$catalog")" = "final" ]
+            [ "$(yq -r '.final.id // ""' "$catalog")" = "$VERSION" ]
 
-            source_revision="$(yq -r '.source.revision' "$catalog")"
+            source_revision="$(yq -r '.final.source.revision' "$catalog")"
             for app_name in webapp internalapi externalapi; do
               values="gitops/$GITOPS_PROJECT_PATH/prod/$app_name/values.yaml"
               environment_release="$(yq -r '.deployment.labels."nexum.pegasusum.com/release-id" // ""' "$values")"
               environment_digest="$(yq -r '.deployment.image.digest // ""' "$values")"
-              catalog_digest="$(APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest' "$catalog")"
+              catalog_digest="$(APP_NAME="$app_name" yq -r '.final.services[strenv(APP_NAME)].digest' "$catalog")"
               [ "$environment_release" = "$VERSION" ] || { echo "$app_name release ID mismatch"; exit 1; }
               [ "$environment_digest" = "$catalog_digest" ] || { echo "$app_name digest mismatch"; exit 1; }
             done
 
             echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
-            echo "webapp_digest=$(yq -r '.services.webapp.digest' "$catalog")" >> "$GITHUB_OUTPUT"
-            echo "internalapi_digest=$(yq -r '.services.internalapi.digest' "$catalog")" >> "$GITHUB_OUTPUT"
-            echo "externalapi_digest=$(yq -r '.services.externalapi.digest' "$catalog")" >> "$GITHUB_OUTPUT"
+            echo "webapp_digest=$(yq -r '.final.services.webapp.digest' "$catalog")" >> "$GITHUB_OUTPUT"
+            echo "internalapi_digest=$(yq -r '.final.services.internalapi.digest' "$catalog")" >> "$GITHUB_OUTPUT"
+            echo "externalapi_digest=$(yq -r '.final.services.externalapi.digest' "$catalog")" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -181,6 +183,7 @@ jobs:
             [registry."${{ env.HARBOR_REGISTRY }}"]
               http = true
               insecure = true
+
 
       - name: Verify final Harbor aliases
         shell: bash

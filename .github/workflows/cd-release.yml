@@ -1,4 +1,8 @@
-name: CD - Release
+name: CD - Release | Promote to WEBCT
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('WEBCT | Start {0} from tested WEBNT artifacts', inputs.version)
+      || format('WEBCT | Process release PR #{0}', github.event.pull_request.number) }}
 
 on:
   pull_request:
@@ -9,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version, for example 1.2.0
+        description: Existing release/vX.Y.Z branch version; its HEAD must match current WEBNT (example 1.2.0)
         required: true
         type: string
 
@@ -242,7 +246,7 @@ jobs:
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
           echo "source_revision=$SOURCE_REVISION" >> "$GITHUB_OUTPUT"
 
-      - name: Create release branch from WEBNT revision
+      - name: Validate release branch against WEBNT revision
         if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
@@ -251,16 +255,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          existing="$(git ls-remote --heads origin "$RELEASE_BRANCH" | awk '{print $1}')"
-          if [[ -n "$existing" ]]; then
-            [[ "$existing" == "$SOURCE_REVISION" ]] || {
-              echo "$RELEASE_BRANCH already exists at another revision."
-              exit 1
-            }
-            exit 0
-          fi
-
-          git push origin "${SOURCE_REVISION}:refs/heads/${RELEASE_BRANCH}"
+          branch_revision="$(git ls-remote --heads origin "refs/heads/$RELEASE_BRANCH" | awk '{print $1}')"
+          [[ -n "$branch_revision" ]] || {
+            echo "$RELEASE_BRANCH does not exist. Create it from tested WEBNT revision $SOURCE_REVISION, then rerun this workflow."
+            exit 1
+          }
+          [[ "$branch_revision" == "$SOURCE_REVISION" ]] || {
+            echo "$RELEASE_BRANCH does not match the tested WEBNT revision."
+            echo "Release branch: $branch_revision"
+            echo "WEBNT revision : $SOURCE_REVISION"
+            exit 1
+          }
 
   build-webapp:
     if: github.event_name == 'pull_request'

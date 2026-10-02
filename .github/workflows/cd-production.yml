@@ -1,10 +1,14 @@
-name: CD - Production
+name: CD - Production | Promote WEBCT to Production
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('Production | Promote {0} from WEBCT', inputs.version)
+      || format('Production | Verify deployed {0}', github.event.client_payload.version) }}
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Approved release version, for example 1.2.0
+        description: Final version whose active WEBCT candidate is approved (example 1.2.0)
         required: true
         type: string
   repository_dispatch:

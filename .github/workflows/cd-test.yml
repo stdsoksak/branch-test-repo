@@ -1,4 +1,5 @@
-name: CD - Test
+name: CD - Test | Promote WEBND to WEBNT
+run-name: WEBNT | Promote current WEBND artifacts by ${{ github.actor }}
 
 # No commit, image tag or digest input is required.
 # The current WEBND artifact is promoted as-is.

@@ -1,4 +1,5 @@
-name: CD - Hotfix
+name: CD - Hotfix | Build merged hotfix for Production
+run-name: Hotfix check | PR #${{ github.event.pull_request.number }} from ${{ github.event.pull_request.head.ref }}
 
 # Hotfix deployment starts after a hotfix/* pull request is merged to main.
 on:

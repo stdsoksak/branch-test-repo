@@ -230,17 +230,17 @@ jobs:
               case "$WEBAPP_RELEASE_ID" in
                 v*-rc.*)
                   [ "$(RELEASE_ID="$WEBAPP_RELEASE_ID" yq -r '[.candidates[] | select(.id == strenv(RELEASE_ID))] | length' "$catalog")" -eq 1 ]
-                  record_selector='.candidates[] | select(.id == strenv(RELEASE_ID))'
+                  catalog_record="$(RELEASE_ID="$WEBAPP_RELEASE_ID" yq -o=json -I=0 '.candidates[] | select(.id == strenv(RELEASE_ID))' "$catalog")"
                   source_status=candidate
                   ;;
                 v*)
                   [ "$(yq -r '.final.id // ""' "$catalog")" = "$WEBAPP_RELEASE_ID" ]
-                  record_selector='.final'
+                  catalog_record="$(yq -o=json -I=0 '.final' "$catalog")"
                   source_status=final
                   ;;
               esac
-              source_revision="$(RELEASE_ID="$WEBAPP_RELEASE_ID" yq -r "($record_selector).source.revision // \"\"" "$catalog")"
-              catalog_tag="$(RELEASE_ID="$WEBAPP_RELEASE_ID" yq -r "($record_selector).services.webapp.tag // \"\"" "$catalog")"
+              source_revision="$(printf '%s\n' "$catalog_record" | yq -r '.source.revision // ""')"
+              catalog_tag="$(printf '%s\n' "$catalog_record" | yq -r '.services.webapp.tag // ""')"
               [ "$catalog_tag" = "$WEBAPP_TAG" ] || { echo "Source tag differs from catalog"; exit 1; }
             else
               case "$WEBAPP_RELEASE_ID" in
@@ -277,9 +277,9 @@ jobs:
 
               printf '%s\n' "$environment_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
               if [ "$catalog_exists" = "true" ]; then
-                catalog_digest="$(RELEASE_ID="$WEBAPP_RELEASE_ID" APP_NAME="$app_name" yq -r "($record_selector).services[strenv(APP_NAME)].digest // \"\"" "$catalog")"
-                catalog_service_tag="$(RELEASE_ID="$WEBAPP_RELEASE_ID" APP_NAME="$app_name" yq -r "($record_selector).services[strenv(APP_NAME)].tag // \"\"" "$catalog")"
-                catalog_revision="$(RELEASE_ID="$WEBAPP_RELEASE_ID" APP_NAME="$app_name" yq -r "($record_selector).services[strenv(APP_NAME)].sourceCommit // \"\"" "$catalog")"
+                catalog_digest="$(printf '%s\n' "$catalog_record" | APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest // ""')"
+                catalog_service_tag="$(printf '%s\n' "$catalog_record" | APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag // ""')"
+                catalog_revision="$(printf '%s\n' "$catalog_record" | APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit // ""')"
 
                 [ "$catalog_digest" = "$environment_digest" ] || { echo "$app_name digest differs from catalog"; exit 1; }
                 [ "$catalog_service_tag" = "$WEBAPP_TAG" ] || { echo "$app_name tag differs from catalog"; exit 1; }

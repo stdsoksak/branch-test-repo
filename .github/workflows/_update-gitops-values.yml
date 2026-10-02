@@ -270,20 +270,20 @@ jobs:
               yq -e '(.candidates | tag == "!!seq") and (.final == null or (.final | tag == "!!map"))' "$catalog" >/dev/null
 
               validate_record() {
-                selector="$1"
-                [ "$(yq -r "($selector).id // \"\"" "$catalog")" = "$RELEASE_ID" ]
-                [ "$(yq -r "($selector).source.branch // \"\"" "$catalog")" = "$SOURCE_BRANCH" ]
-                [ "$(yq -r "($selector).source.revision // \"\"" "$catalog")" = "$SOURCE_REVISION" ]
+                catalog_record="$1"
+                [ "$(printf '%s\n' "$catalog_record" | yq -r '.id // ""')" = "$RELEASE_ID" ]
+                [ "$(printf '%s\n' "$catalog_record" | yq -r '.source.branch // ""')" = "$SOURCE_BRANCH" ]
+                [ "$(printf '%s\n' "$catalog_record" | yq -r '.source.revision // ""')" = "$SOURCE_REVISION" ]
 
                 for app_name in webapp internalapi externalapi; do
                   expected_digest="$(
                     printf '%s\n' "$ARTIFACT_SET" |
                       APP_NAME="$app_name" yq -r '.[] | select(.app_name == strenv(APP_NAME)) | .digest'
                   )"
-                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].digest // \"\"" "$catalog")" = "$expected_digest" ]
-                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].sourceCommit // \"\"" "$catalog")" = "$SOURCE_REVISION" ]
-                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].tag // \"\"" "$catalog")" = "$IMAGE_TAG" ]
-                  [ "$(APP_NAME="$app_name" yq -r "($selector).services[strenv(APP_NAME)].repository // \"\"" "$catalog")" = "$HARBOR_REGISTRY/$HARBOR_PROJECT/$app_name" ]
+                  [ "$(printf '%s\n' "$catalog_record" | APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].digest // ""')" = "$expected_digest" ]
+                  [ "$(printf '%s\n' "$catalog_record" | APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].sourceCommit // ""')" = "$SOURCE_REVISION" ]
+                  [ "$(printf '%s\n' "$catalog_record" | APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].tag // ""')" = "$IMAGE_TAG" ]
+                  [ "$(printf '%s\n' "$catalog_record" | APP_NAME="$app_name" yq -r '.services[strenv(APP_NAME)].repository // ""')" = "$HARBOR_REGISTRY/$HARBOR_PROJECT/$app_name" ]
                 done
               }
 
@@ -292,7 +292,8 @@ jobs:
                 [ "$candidate_count" -le 1 ]
 
                 if [ "$candidate_count" -eq 1 ]; then
-                  validate_record '.candidates[] | select(.id == strenv(RELEASE_ID))'
+                  candidate_record="$(RELEASE_ID="$RELEASE_ID" yq -o=json -I=0 '.candidates[] | select(.id == strenv(RELEASE_ID))' "$catalog")"
+                  validate_record "$candidate_record"
                 else
                   [ "$UPDATE_CATALOG" = "true" ]
                   [ "$(yq -r '.status' "$catalog")" != "final" ]
@@ -348,7 +349,8 @@ jobs:
               else
                 [ "$RELEASE_ID" = "$catalog_id" ]
                 if [ "$(yq -r '.final.id // ""' "$catalog")" = "$RELEASE_ID" ]; then
-                  validate_record '.final'
+                  final_record="$(yq -o=json -I=0 '.final' "$catalog")"
+                  validate_record "$final_record"
                 else
                   [ "$UPDATE_CATALOG" = "true" ] || [ "$(yq -r '.candidates | length' "$catalog")" -eq 0 ]
                   [ "$(yq -r '.final == null' "$catalog")" = "true" ]

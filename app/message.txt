@@ -1,1 +1,1 @@
-feature(v1.5.0): preparing release v1.5.0 features for webnd
+feature(v1.5.0): applied candidate fix 1 for release v1.5.0 (rc.2 test)

@@ -51,7 +51,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITOPS_TOKEN }}
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v4

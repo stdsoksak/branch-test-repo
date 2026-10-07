@@ -60,7 +60,7 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
           path: gitops
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Resolve release identity
         id: release
@@ -142,6 +142,26 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare pending WEBCT catalog snapshot
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          pending_branch="gitops/nexum-webct-${VERSION}"
+          catalog_path="$GITOPS_RELEASE_PATH/$VERSION.yaml"
+          pending_catalog="gitops/.pending-release-catalog.yaml"
+          rm -f "$pending_catalog"
+
+          if git -C gitops ls-remote --exit-code --heads origin "refs/heads/$pending_branch" >/dev/null 2>&1; then
+            git -C gitops fetch origin "refs/heads/$pending_branch:refs/remotes/origin/$pending_branch"
+            if git -C gitops cat-file -e "origin/$pending_branch:$catalog_path" 2>/dev/null; then
+              git -C gitops show "origin/$pending_branch:$catalog_path" > "$pending_catalog"
+            fi
+          fi
+
       - name: Read current release catalog
         id: current_catalog
         uses: mikefarah/yq@v4.53.6
@@ -152,11 +172,22 @@ jobs:
             set -eu
             catalog="gitops/$GITOPS_RELEASE_PATH/$VERSION.yaml"
             if [ -f "$catalog" ]; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
               echo "release_id=$(yq -r '.activeCandidate // ""' "$catalog")" >> "$GITHUB_OUTPUT"
               echo "status=$(yq -r '.status // ""' "$catalog")" >> "$GITHUB_OUTPUT"
             else
+              echo "exists=false" >> "$GITHUB_OUTPUT"
               echo "release_id=" >> "$GITHUB_OUTPUT"
               echo "status=" >> "$GITHUB_OUTPUT"
+            fi
+
+            pending_catalog="gitops/.pending-release-catalog.yaml"
+            if [ -f "$pending_catalog" ]; then
+              [ "$(yq -r '.version // ""' "$pending_catalog")" = "$VERSION" ]
+              [ "$(yq -r '.status // ""' "$pending_catalog")" = "candidate" ]
+              echo "pending_release_id=$(yq -r '.activeCandidate // ""' "$pending_catalog")" >> "$GITHUB_OUTPUT"
+            else
+              echo "pending_release_id=" >> "$GITHUB_OUTPUT"
             fi
 
       - name: Read WEBNT build metadata
@@ -194,8 +225,10 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.version }}
           RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
+          CURRENT_CATALOG_EXISTS: ${{ steps.current_catalog.outputs.exists }}
           CURRENT_RELEASE_ID: ${{ steps.current_catalog.outputs.release_id }}
           CURRENT_STATUS: ${{ steps.current_catalog.outputs.status }}
+          PENDING_RELEASE_ID: ${{ steps.current_catalog.outputs.pending_release_id }}
           MERGE_REVISION: ${{ github.event.pull_request.merge_commit_sha }}
           WEBNT_SOURCE_REVISION: ${{ steps.webnt.outputs.source_revision }}
         run: |
@@ -223,20 +256,24 @@ jobs:
               exit 1
             }
           else
-            max_rc=0
-            if [[ -n "$CURRENT_RELEASE_ID" ]]; then
-              [[ "$CURRENT_RELEASE_ID" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || {
-                echo "Invalid candidate ID in $VERSION catalog: $CURRENT_RELEASE_ID"
+            [[ "$CURRENT_CATALOG_EXISTS" == "true" && "$CURRENT_STATUS" == "candidate" && -n "$CURRENT_RELEASE_ID" ]] || {
+              echo "$VERSION has no active release catalog on GitOps main."
+              echo "Initialize it from tested WEBNT artifacts before publishing release-branch changes."
+              exit 1
+            }
+            [[ "$CURRENT_RELEASE_ID" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || {
+              echo "Invalid candidate ID in $VERSION catalog: $CURRENT_RELEASE_ID"
+              exit 1
+            }
+            max_rc="${BASH_REMATCH[1]}"
+
+            if [[ -n "$PENDING_RELEASE_ID" ]]; then
+              [[ "$PENDING_RELEASE_ID" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || {
+                echo "Invalid candidate ID in pending $VERSION catalog: $PENDING_RELEASE_ID"
                 exit 1
               }
-              max_rc="${BASH_REMATCH[1]}"
-            fi
-
-            while IFS= read -r ref; do
-              candidate="${ref##*/gitops/nexum-webct-}"
-              [[ "$candidate" =~ ^${VERSION//./\.}-rc\.([1-9][0-9]*)$ ]] || continue
               (( BASH_REMATCH[1] > max_rc )) && max_rc="${BASH_REMATCH[1]}"
-            done < <(git -C gitops for-each-ref --format='%(refname)' "refs/remotes/origin/gitops/nexum-webct-${VERSION}-rc.*")
+            fi
 
             release_id="${VERSION}-rc.$((max_rc + 1))"
           fi
@@ -318,7 +355,6 @@ jobs:
             [registry."${{ env.HARBOR_REGISTRY }}"]
               http = true
               insecure = true
-
 
       - name: Create RC aliases from immutable digests
         shell: bash

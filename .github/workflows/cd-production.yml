@@ -1,8 +1,5 @@
 name: CD - Production | Promote WEBCT to Production
-run-name: >-
-  ${{ github.event_name == 'workflow_dispatch'
-      && format('Production | Promote {0} from WEBCT', inputs.version)
-      || format('Production | Verify deployed {0}', github.event.client_payload.version) }}
+run-name: Production | Promote ${{ inputs.version }} from WEBCT
 
 on:
   workflow_dispatch:
@@ -11,9 +8,6 @@ on:
         description: Final version whose active WEBCT candidate is approved (example 1.2.0)
         required: true
         type: string
-  repository_dispatch:
-    types:
-      - nexum-production-deployed
 
 permissions:
   contents: write
@@ -23,8 +17,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HARBOR_REGISTRY: registry.kube-system.svc.cluster.local:80
-  HARBOR_PROJECT: nexum
   GITOPS_OWNER: stdsoksak
   GITOPS_REPOSITORY: test-gitops
   GITOPS_BRANCH: main
@@ -33,7 +25,6 @@ env:
 
 jobs:
   finalize-release:
-    if: github.event_name == 'workflow_dispatch'
     name: Validate WEBCT Candidate
     runs-on: nexum-project-local
 
@@ -100,7 +91,6 @@ jobs:
             echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
 
   deploy-production:
-    if: github.event_name == 'workflow_dispatch'
     name: Promote WEBCT to Production
     needs: finalize-release
     uses: ./.github/workflows/promote-environment.yml
@@ -120,123 +110,42 @@ jobs:
       expected_source_status: candidate
     secrets: inherit
 
-  # The GitOps repository owns Argo verification and dispatches only after a healthy rollout.
-  complete-production:
-    if: github.event_name == 'repository_dispatch'
-    name: Complete Verified Production Release
+  tag-release:
+    name: Tag Source Revision
+    needs:
+      - finalize-release
+      - deploy-production
     runs-on: nexum-project-local
-    environment: prod
 
     steps:
-      - name: Normalize callback version
-        id: release
-        shell: bash
-        env:
-          CALLBACK_VERSION: ${{ github.event.client_payload.version }}
-        run: |
-          set -euo pipefail
-          VERSION="${CALLBACK_VERSION#v}"
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
-          echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout GitOps repository
+      - name: Checkout final source revision
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.GITOPS_OWNER }}/${{ env.GITOPS_REPOSITORY }}
-          ref: ${{ github.event.client_payload.gitops_revision }}
-          token: ${{ secrets.GITOPS_TOKEN }}
-          path: gitops
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Validate final catalog and Production state
-        id: production
-        uses: mikefarah/yq@v4.53.6
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
-        with:
-          cmd: |
-            set -eu
-            catalog="gitops/nexum/releases/$VERSION.yaml"
-            [ -f "$catalog" ]
-            [ "$(yq -r '.status' "$catalog")" = "final" ]
-            [ "$(yq -r '.final.id // ""' "$catalog")" = "$VERSION" ]
-
-            source_revision="$(yq -r '.final.source.revision' "$catalog")"
-            for app_name in webapp internalapi externalapi; do
-              values="gitops/$GITOPS_PROJECT_PATH/prod/$app_name/values.yaml"
-              environment_release="$(yq -r '.deployment.labels."nexum.pegasusum.com/release-id" // ""' "$values")"
-              environment_digest="$(yq -r '.deployment.image.digest // ""' "$values")"
-              catalog_digest="$(APP_NAME="$app_name" yq -r '.final.services[strenv(APP_NAME)].digest' "$catalog")"
-              [ "$environment_release" = "$VERSION" ] || { echo "$app_name release ID mismatch"; exit 1; }
-              [ "$environment_digest" = "$catalog_digest" ] || { echo "$app_name digest mismatch"; exit 1; }
-            done
-
-            echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
-            echo "webapp_digest=$(yq -r '.final.services.webapp.digest' "$catalog")" >> "$GITHUB_OUTPUT"
-            echo "internalapi_digest=$(yq -r '.final.services.internalapi.digest' "$catalog")" >> "$GITHUB_OUTPUT"
-            echo "externalapi_digest=$(yq -r '.final.services.externalapi.digest' "$catalog")" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: |
-            network=host
-          buildkitd-config-inline: |
-            [registry."${{ env.HARBOR_REGISTRY }}"]
-              http = true
-              insecure = true
-
-
-      - name: Verify final Harbor aliases
-        shell: bash
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
-          WEBAPP_DIGEST: ${{ steps.production.outputs.webapp_digest }}
-          INTERNALAPI_DIGEST: ${{ steps.production.outputs.internalapi_digest }}
-          EXTERNALAPI_DIGEST: ${{ steps.production.outputs.externalapi_digest }}
-        run: |
-          set -euo pipefail
-          for app_name in webapp internalapi externalapi; do
-            case "$app_name" in
-              webapp) expected="$WEBAPP_DIGEST" ;;
-              internalapi) expected="$INTERNALAPI_DIGEST" ;;
-              externalapi) expected="$EXTERNALAPI_DIGEST" ;;
-            esac
-            actual="$(docker buildx imagetools inspect "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${app_name}:${VERSION}" | awk '/^Digest:/ {print $2; exit}')"
-            [[ "$actual" == "$expected" ]] || { echo "$app_name Harbor digest mismatch"; exit 1; }
-          done
-
-      - name: Checkout catalog source revision
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.production.outputs.source_revision }}
-          path: source
+          ref: ${{ needs.finalize-release.outputs.source_revision }}
           fetch-depth: 0
 
-      - name: Check existing release tag
-        id: tag
+      - name: Create immutable release tag
         shell: bash
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-          SOURCE_REVISION: ${{ steps.production.outputs.source_revision }}
+          VERSION: ${{ needs.finalize-release.outputs.version }}
+          SOURCE_REVISION: ${{ needs.finalize-release.outputs.source_revision }}
         run: |
           set -euo pipefail
-          git -C source fetch --force --tags origin
-          existing="$(git -C source rev-parse -q --verify "refs/tags/${VERSION}^{commit}" || true)"
+          git fetch --force --tags origin
+          existing="$(git rev-parse -q --verify "refs/tags/${VERSION}^{commit}" || true)"
 
           if [[ -n "$existing" && "$existing" != "$SOURCE_REVISION" ]]; then
             echo "$VERSION already points to a different source revision."
             exit 1
           fi
 
-          [[ -z "$existing" ]] && echo "create=true" >> "$GITHUB_OUTPUT" || echo "create=false" >> "$GITHUB_OUTPUT"
+          if [[ -z "$existing" ]]; then
+            git tag "$VERSION" "$SOURCE_REVISION"
+            git push origin "refs/tags/$VERSION"
+          fi
 
-      - name: Create and push release tag
-        if: steps.tag.outputs.create == 'true'
-        uses: stefanzweifel/git-auto-commit-action@v6.0.1
-        with:
-          repository: source
-          create_git_tag_only: true
-          tagging_message: ${{ steps.release.outputs.version }}
+          {
+            echo "## Production release tag"
+            echo "- Tag: \`$VERSION\`"
+            echo "- Source revision: \`$SOURCE_REVISION\`"
+          } >> "$GITHUB_STEP_SUMMARY"

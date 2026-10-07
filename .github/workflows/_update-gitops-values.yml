@@ -59,11 +59,6 @@ on:
     secrets:
       GITOPS_TOKEN:
         required: true
-    outputs:
-      pull_request_number:
-        value: ${{ jobs.update.outputs.pull_request_number }}
-      pull_request_url:
-        value: ${{ jobs.update.outputs.pull_request_url }}
 
 env:
   HARBOR_REGISTRY: registry.kube-system.svc.cluster.local:80
@@ -79,10 +74,6 @@ jobs:
     name: Update ${{ inputs.target_environment }} artifact set
     runs-on: nexum-project-local
     environment: ${{ inputs.target_environment }}
-
-    outputs:
-      pull_request_number: ${{ steps.create-pr.outputs.pull-request-number }}
-      pull_request_url: ${{ steps.create-pr.outputs.pull-request-url }}
 
     steps:
       - name: Checkout source revision
@@ -118,6 +109,53 @@ jobs:
           path: gitops
           fetch-depth: 0
           persist-credentials: true
+
+      - name: Resolve GitOps pull request branch
+        if: inputs.create_pr
+        id: gitops-pr-branch
+        shell: bash
+        env:
+          TARGET_ENV: ${{ inputs.target_environment }}
+          RELEASE_STATUS: ${{ inputs.release_status }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          CATALOG_ID: ${{ inputs.catalog_id }}
+        run: |
+          set -euo pipefail
+
+          hydrate_candidate=false
+          if [[ "$TARGET_ENV" == "webct" && "$RELEASE_STATUS" == "candidate" ]]; then
+            [[ "$CATALOG_ID" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "WEBCT candidate requires a semantic version catalog ID."
+              exit 1
+            }
+            pull_request_branch="gitops/nexum-webct-${CATALOG_ID}"
+            hydrate_candidate=true
+          else
+            pull_request_branch="gitops/nexum-${TARGET_ENV}-${RELEASE_ID}"
+          fi
+          echo "branch=$pull_request_branch" >> "$GITHUB_OUTPUT"
+
+          if [[ "$hydrate_candidate" != "true" ]] ||
+             ! git -C gitops ls-remote --exit-code --heads origin "refs/heads/$pull_request_branch" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          git -C gitops fetch origin "refs/heads/$pull_request_branch:refs/remotes/origin/$pull_request_branch"
+          if git -C gitops merge-base --is-ancestor "origin/$pull_request_branch" HEAD; then
+            exit 0
+          fi
+
+          pending_paths=(
+            "$GITOPS_RELEASE_PATH/$CATALOG_ID.yaml"
+            "$GITOPS_PROJECT_PATH/webct/webapp/values.yaml"
+            "$GITOPS_PROJECT_PATH/webct/internalapi/values.yaml"
+            "$GITOPS_PROJECT_PATH/webct/externalapi/values.yaml"
+          )
+          for pending_path in "${pending_paths[@]}"; do
+            if git -C gitops cat-file -e "origin/$pull_request_branch:$pending_path" 2>/dev/null; then
+              git -C gitops checkout "origin/$pull_request_branch" -- "$pending_path"
+            fi
+          done
 
       - name: Prepare catalog file ownership
         if: inputs.create_catalog
@@ -423,7 +461,7 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
           path: gitops
           base: ${{ env.GITOPS_BRANCH }}
-          branch: gitops/nexum-${{ inputs.target_environment }}-${{ inputs.release_id }}
+          branch: ${{ steps.gitops-pr-branch.outputs.branch }}
           delete-branch: true
           commit-message: ${{ inputs.commit_message }}
           title: ${{ inputs.commit_message }}
@@ -459,4 +497,27 @@ jobs:
 
           git -C gitops diff --cached --quiet && exit 0
           git -C gitops commit -m "$COMMIT_MESSAGE"
-          git -C gitops push origin "HEAD:${GITOPS_BRANCH}"
+
+          max_attempts=3
+          for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+            echo "GitOps push attempt $attempt/$max_attempts"
+            git -C gitops fetch origin "$GITOPS_BRANCH"
+
+            if ! git -C gitops rebase "origin/$GITOPS_BRANCH"; then
+              git -C gitops rebase --abort || true
+              echo "GitOps rebase conflict. Refusing to overwrite concurrent changes."
+              exit 1
+            fi
+
+            if git -C gitops push origin "HEAD:${GITOPS_BRANCH}"; then
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "GitOps main changed during all $max_attempts push attempts."
+              exit 1
+            fi
+
+            echo "GitOps main changed during push; retrying in 2 seconds."
+            sleep 2
+          done

@@ -68,76 +68,76 @@ jobs:
             catalog="gitops/$GITOPS_RELEASE_PATH/$VERSION.yaml"
 
             if [ ! -f "$catalog" ]; then
-              echo "::error title=Release Gate: Katalog Bulunamadı::${VERSION} sürüm kataloğu GitOps üzerinde henüz başlatılmamış ($catalog). Lütfen önce Actions ekranından 'CD - Release' (workflow_dispatch) çalıştırın."
+              echo "::error title=Release Gate: Katalog Bulunamadi::${VERSION} surum katalogu GitOps uzerinde henuz baslatilmamis ($catalog). Lutfen once Actions ekranindan 'CD - Release' (workflow_dispatch) calistirin."
               {
-                echo "# 🛡️ Release Initialization Gate: KİLİTLİ ❌"
+                echo "# Release Initialization Gate: KILITLI"
                 echo ""
                 echo "> [!CAUTION]"
-                echo "> **${VERSION}** sürüm kataloğu GitOps deposunda (\`main\`) bulunamadı."
-                echo "> Release branch'ine erken PR merge edilerek sürümün kilitlenmesini önlemek için merge butonu kilitlendi."
+                echo "> **${VERSION}** surum katalogu GitOps deposunda (\`main\`) bulunamadi."
+                echo "> Release branch'ine erken PR merge edilerek surumun kilitlenmesini onlemek icin merge butonu kilitlendi."
                 echo ""
-                echo "### 📋 Durum Bilgisi"
-                echo "| Alan | Değer |"
+                echo "### Durum Bilgisi"
+                echo "| Alan | Deger |"
                 echo "| :--- | :--- |"
-                echo "| **Sürüm (Version)** | \`${VERSION}\` |"
+                echo "| **Surum (Version)** | \`${VERSION}\` |"
                 echo "| **Hedef Dal** | \`${RELEASE_BRANCH}\` |"
-                echo "| **Beklenen Katalog** | \`${catalog}\` ❌ |"
-                echo "| **Gate Sonucu** | 🔴 **Merge Engellendi** |"
+                echo "| **Beklenen Katalog** | \`${catalog}\` (Bulunamadi) |"
+                echo "| **Gate Sonucu** | Merge Engellendi |"
                 echo ""
-                echo "### 🛠️ Kilidi Açmak İçin Ne Yapmalısınız?"
+                echo "### Kilidi Acmak Icin Yapilmasi Gerekenler"
                 echo "1. GitHub Actions sekmesinden **CD - Release** workflow'una gidin."
-                echo "2. **Run workflow** butonuna basıp \`version: ${VERSION#v}\` parametresiyle çalıştırın."
-                echo "3. GitOps reposunda açılan **rc.1 Pull Request'ini inceleyip merge edin**."
-                echo "4. Bu PR sayfasına geri dönün; Release Gate kontrolü otomatik olarak **yeşile** dönecektir."
+                echo "2. **Run workflow** butonuna basip \`version: ${VERSION#v}\` parametresiyle calistirin."
+                echo "3. GitOps reposunda acilan **rc.1 Pull Request'ini inceleyip merge edin**."
+                echo "4. Bu PR sayfasina geri donun; Release Gate kontrolu otomatik olarak basarili olacaktir."
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
 
-            echo "::group::🔍 GitOps Katalog Doğrulama Logları"
+            echo "::group::GitOps Katalog Dogrulama Loglari"
 
             if [ "$(yq -r '.version // ""' "$catalog")" != "$VERSION" ]; then
-              echo "::error title=Katalog Versiyon Uyuşmazlığı::Katalogdaki versiyon ($catalog) ile ${VERSION} uyuşmuyor."
+              echo "::error title=Katalog Versiyon Uyusmazligi::Katalogdaki versiyon ($catalog) ile ${VERSION} uyusmuyor."
               exit 1
             fi
 
             if [ "$(yq -r '.status // ""' "$catalog")" != "candidate" ]; then
-              echo "::error title=Geçersiz Sürüm Statüsü::${VERSION} kataloğu aktif bir candidate sürüm değil."
+              echo "::error title=Gecersiz Surum Statusu::${VERSION} katalogu aktif bir candidate surum degil."
               exit 1
             fi
 
             active_candidate="$(yq -r '.activeCandidate // ""' "$catalog")"
             escaped_version="$(printf '%s' "$VERSION" | sed 's/\./\\./g')"
             if ! printf '%s\n' "$active_candidate" | grep -Eq "^${escaped_version}-rc\.[1-9][0-9]*$"; then
-              echo "::error title=Geçersiz Aktif Aday::${VERSION} kataloğunda geçerli bir aktif aday bulunamadı."
+              echo "::error title=Gecersiz Aktif Aday::${VERSION} katalogunda gecerli bir aktif aday bulunamadi."
               exit 1
             fi
 
             candidate_count="$(RELEASE_ID="$active_candidate" yq -r '[.candidates[] | select(.id == strenv(RELEASE_ID))] | length' "$catalog")"
             if [ "$candidate_count" -ne 1 ]; then
-              echo "::error title=Aday Kayıt Hatası::Aktif aday ($active_candidate) katalogda eksik veya birden fazla."
+              echo "::error title=Aday Kayit Hatasi::Aktif aday ($active_candidate) katalogda eksik veya birden fazla."
               exit 1
             fi
 
-            echo "Katalog başarıyla doğrulandı: $catalog"
+            echo "Katalog basariyla dogrulandi: $catalog"
             echo "Aktif aday: $active_candidate"
             echo "::endgroup::"
 
-            echo "::notice title=Release Gate: Onaylandı::${VERSION} kataloğu doğrulandı (Aktif Aday: ${active_candidate}). PR merge edilebilir."
+            echo "::notice title=Release Gate: Onaylandi::${VERSION} katalogu dogrulandi (Aktif Aday: ${active_candidate}). PR merge edilebilir."
 
             {
-              echo "# 🛡️ Release Initialization Gate: ONAYLANDI ✅"
+              echo "# Release Initialization Gate: ONAYLANDI"
               echo ""
               echo "> [!NOTE]"
-              echo "> \`${VERSION}\` sürüm kataloğu ve aktif aday (\`${active_candidate}\`) GitOps üzerinde doğrulandı."
-              echo "> Bu PR güvenle merge edilebilir."
+              echo "> \`${VERSION}\` surum katalogu ve aktif aday (\`${active_candidate}\`) GitOps uzerinde dogrulandi."
+              echo "> Bu PR guvenle merge edilebilir."
               echo ""
-              echo "### 📋 Doğrulama Özeti"
-              echo "| Parametre | Değer |"
+              echo "### Dogrulama Ozeti"
+              echo "| Parametre | Deger |"
               echo "| :--- | :--- |"
-              echo "| **Sürüm (Version)** | \`${VERSION}\` |"
+              echo "| **Surum (Version)** | \`${VERSION}\` |"
               echo "| **Hedef Dal** | \`${RELEASE_BRANCH}\` |"
-              echo "| **Aktif Aday (Candidate)** | \`${active_candidate}\` 🟢 |"
-              echo "| **Katalog Dosyası** | \`${catalog}\` |"
-              echo "| **Katalog Statüsü** | \`candidate\` ✅ |"
-              echo "| **Gate Sonucu** | 🟢 **Merge Edilebilir** |"
+              echo "| **Aktif Aday (Candidate)** | \`${active_candidate}\` |"
+              echo "| **Katalog Dosyasi** | \`${catalog}\` |"
+              echo "| **Katalog Statusu** | \`candidate\` |"
+              echo "| **Gate Sonucu** | Merge Edilebilir |"
             } >> "$GITHUB_STEP_SUMMARY"

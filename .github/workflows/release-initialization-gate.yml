@@ -1,0 +1,94 @@
+name: Release Initialization Gate
+run-name: Release gate | PR #${{ github.event.pull_request.number }} to ${{ github.event.pull_request.base.ref }}
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
+    branches:
+      - "release/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-initialization-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+env:
+  GITOPS_OWNER: stdsoksak
+  GITOPS_REPOSITORY: test-gitops
+  GITOPS_BRANCH: main
+  GITOPS_RELEASE_PATH: nexum/releases
+
+jobs:
+  release-initialized:
+    name: Release Initialization Gate
+    runs-on: nexum-project-local
+
+    steps:
+      - name: Resolve release version
+        id: release
+        shell: bash
+        env:
+          RELEASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          [[ "$RELEASE_BRANCH" =~ ^release/(v[0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
+            echo "Release branch must look like release/v1.2.0."
+            exit 1
+          }
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout GitOps main
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_OWNER }}/${{ env.GITOPS_REPOSITORY }}
+          ref: ${{ env.GITOPS_BRANCH }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Require initialized release catalog
+        uses: mikefarah/yq@v4.53.6
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        with:
+          cmd: |
+            set -eu
+
+            catalog="gitops/$GITOPS_RELEASE_PATH/$VERSION.yaml"
+            [ -f "$catalog" ] || {
+              echo "$VERSION is not initialized on GitOps main."
+              echo "Run CD - Release and merge its initial WEBCT GitOps pull request before merging source changes."
+              exit 1
+            }
+
+            [ "$(yq -r '.version // ""' "$catalog")" = "$VERSION" ] || {
+              echo "Catalog version does not match $VERSION."
+              exit 1
+            }
+            [ "$(yq -r '.status // ""' "$catalog")" = "candidate" ] || {
+              echo "$VERSION is not an active candidate release."
+              exit 1
+            }
+
+            active_candidate="$(yq -r '.activeCandidate // ""' "$catalog")"
+            escaped_version="$(printf '%s' "$VERSION" | sed 's/\./\\./g')"
+            printf '%s\n' "$active_candidate" | grep -Eq "^${escaped_version}-rc\.[1-9][0-9]*$" || {
+              echo "$VERSION catalog has no valid active candidate."
+              exit 1
+            }
+
+            [ "$(RELEASE_ID="$active_candidate" yq -r '[.candidates[] | select(.id == strenv(RELEASE_ID))] | length' "$catalog")" -eq 1 ] || {
+              echo "Active candidate $active_candidate is missing or duplicated in the catalog."
+              exit 1
+            }
+
+            echo "$VERSION is initialized with active candidate $active_candidate."

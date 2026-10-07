@@ -99,7 +99,6 @@ jobs:
               http = true
               insecure = true
 
-
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
         with:

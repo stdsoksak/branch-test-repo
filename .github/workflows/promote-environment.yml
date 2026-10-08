@@ -377,6 +377,27 @@ jobs:
           alias_image internalapi "$INTERNALAPI_DIGEST"
           alias_image externalapi "$EXTERNALAPI_DIGEST"
 
+      - name: Write promotion validation summary
+        shell: bash
+        env:
+          SOURCE_ENV: ${{ inputs.source_environment }}
+          TARGET_ENV: ${{ inputs.target_environment }}
+          RELEASE_ID: ${{ steps.metadata.outputs.release_id }}
+          SOURCE_REVISION: ${{ steps.metadata.outputs.source_revision }}
+          SOURCE_IMAGE_TAG: ${{ steps.metadata.outputs.source_image_tag }}
+          TARGET_TAG: ${{ steps.metadata.outputs.target_tag }}
+        run: |
+          {
+            echo "## Artifact Promotion Validated"
+            echo "- Route: \`${SOURCE_ENV^^} -> ${TARGET_ENV^^}\`"
+            echo "- Release: \`$RELEASE_ID\`"
+            echo "- Source revision: [\`${SOURCE_REVISION:0:12}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SOURCE_REVISION})"
+            echo "- Source image tag: \`$SOURCE_IMAGE_TAG\`"
+            echo "- Target image tag: \`$TARGET_TAG\`"
+            echo "- Services verified: \`webapp\`, \`internalapi\`, \`externalapi\`"
+            echo "- Harbor digests: Verified"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     name: Promote artifact set to ${{ inputs.target_environment }}
     needs: validate

@@ -521,3 +521,40 @@ jobs:
             echo "GitOps main changed during push; retrying in 2 seconds."
             sleep 2
           done
+
+      - name: Write GitOps delivery summary
+        shell: bash
+        env:
+          CREATE_PR: ${{ inputs.create_pr }}
+          TARGET_ENV: ${{ inputs.target_environment }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          PROMOTED_FROM: ${{ inputs.promoted_from }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          SOURCE_SUBJECT: ${{ steps.source-commit.outputs.subject }}
+          PR_BRANCH: ${{ steps.gitops-pr-branch.outputs.branch }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          PR_URL: ${{ steps.create-pr.outputs.pull-request-url }}
+          PR_OPERATION: ${{ steps.create-pr.outputs.pull-request-operation }}
+        run: |
+          {
+            echo "## GitOps Delivery"
+            echo "- Environment: \`${TARGET_ENV^^}\`"
+            echo "- Release: \`$RELEASE_ID\`"
+            echo "- Promoted from: \`$PROMOTED_FROM\`"
+            echo "- Source: [\`${SOURCE_REVISION:0:12}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SOURCE_REVISION}) - $SOURCE_SUBJECT"
+
+            if [[ "$CREATE_PR" == "true" ]]; then
+              echo "- Delivery: GitOps pull request"
+              echo "- Branch: \`$PR_BRANCH\`"
+              if [[ -n "$PR_URL" ]]; then
+                echo "- Pull request: [#$PR_NUMBER]($PR_URL)"
+                echo "- Operation: \`${PR_OPERATION:-unchanged}\`"
+              else
+                echo "- Pull request: No GitOps change required"
+              fi
+            else
+              gitops_revision="$(git -C gitops rev-parse HEAD)"
+              echo "- Delivery: Direct push to \`$GITOPS_BRANCH\`"
+              echo "- GitOps revision: \`${gitops_revision:0:12}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

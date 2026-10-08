@@ -405,6 +405,20 @@ jobs:
           alias_image internalapi "$INTERNALAPI_DIGEST"
           alias_image externalapi "$EXTERNALAPI_DIGEST"
 
+      - name: Write release candidate image summary
+        shell: bash
+        env:
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          SOURCE_REVISION: ${{ needs.prepare-release.outputs.source_revision }}
+        run: |
+          {
+            echo "## Release Candidate Images"
+            echo "- Candidate: \`$RELEASE_ID\`"
+            echo "- Source revision: [\`${SOURCE_REVISION:0:12}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SOURCE_REVISION})"
+            echo "- Services: \`webapp\`, \`internalapi\`, \`externalapi\`"
+            echo "- Harbor aliases: Created and verified"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy-initial-release-candidate:
     if: github.event_name == 'workflow_dispatch'
     name: Promote WEBNT as Initial Release Candidate

@@ -90,6 +90,22 @@ jobs:
             printf '%s\n' "$source_revision" | grep -Eq '^[0-9a-f]{40}$'
             echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
 
+      - name: Write Production candidate summary
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CANDIDATE_ID: ${{ steps.webct_candidate.outputs.result }}
+          SOURCE_REVISION: ${{ steps.candidate_source.outputs.source_revision }}
+        run: |
+          {
+            echo "## Production Candidate Approved"
+            echo "- Version: \`$VERSION\`"
+            echo "- Approved candidate: \`$CANDIDATE_ID\`"
+            echo "- Source revision: [\`${SOURCE_REVISION:0:12}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SOURCE_REVISION})"
+            echo "- WEBCT catalog state: Verified"
+            echo "- Next action: Review and merge the Production GitOps pull request"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy-production:
     name: Promote WEBCT to Production
     needs: finalize-release

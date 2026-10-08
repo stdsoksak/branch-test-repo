@@ -56,7 +56,7 @@ jobs:
           echo "branch=release/v${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout GitOps repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.GITOPS_OWNER }}/${{ env.GITOPS_REPOSITORY }}
           ref: ${{ env.GITOPS_BRANCH }}
@@ -119,7 +119,7 @@ jobs:
 
     steps:
       - name: Checkout final source revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.finalize-release.outputs.source_revision }}
           fetch-depth: 0

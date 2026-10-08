@@ -46,7 +46,7 @@ jobs:
           echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout GitOps main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.GITOPS_OWNER }}/${{ env.GITOPS_REPOSITORY }}
           ref: ${{ env.GITOPS_BRANCH }}
@@ -56,6 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Require initialized release catalog
+        id: catalog
         uses: mikefarah/yq@v4.53.6
         env:
           VERSION: ${{ steps.release.outputs.version }}
@@ -91,4 +92,29 @@ jobs:
               exit 1
             }
 
+            echo "active_candidate=$active_candidate" >> "$GITHUB_OUTPUT"
             echo "$VERSION is initialized with active candidate $active_candidate."
+
+      - name: Write gate summary
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          ACTIVE_CANDIDATE: ${{ steps.catalog.outputs.active_candidate }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "## Release Initialization Gate"
+            echo "- Result: \`$RESULT\`"
+            echo "- Pull request: \`#$PR_NUMBER\`"
+            echo "- Release branch: \`$RELEASE_BRANCH\`"
+            echo "- Version: \`${VERSION:-unresolved}\`"
+            echo "- GitOps catalog: \`${VERSION:+$GITOPS_RELEASE_PATH/$VERSION.yaml}\`"
+            if [[ -n "$ACTIVE_CANDIDATE" ]]; then
+              echo "- Active candidate: \`$ACTIVE_CANDIDATE\`"
+            else
+              echo "- Action required: initialize the release through \`CD - Release\` and merge its WEBCT GitOps pull request."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

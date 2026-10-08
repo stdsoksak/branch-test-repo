@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout source revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_revision }}
           fetch-depth: 1
@@ -49,7 +49,7 @@ jobs:
         run: echo "image_tag=git-${SOURCE_REVISION:0:12}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           driver: docker-container
           driver-opts: |
@@ -61,7 +61,7 @@ jobs:
 
       - name: Build and push image
         id: image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ inputs.dockerfile }}

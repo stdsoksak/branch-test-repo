@@ -46,7 +46,13 @@ jobs:
         shell: bash
         env:
           SOURCE_REVISION: ${{ inputs.source_revision }}
-        run: echo "image_tag=git-${SOURCE_REVISION:0:12}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          source_subject="$(git log -1 --format=%s "$SOURCE_REVISION")"
+          {
+            echo "image_tag=git-${SOURCE_REVISION:0:12}"
+            echo "source_subject=$source_subject"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -93,13 +99,19 @@ jobs:
               "${repository}@${DIGEST}"
           fi
 
-      - name: Build summary
+      - name: Write image summary
         shell: bash
+        env:
+          IMAGE_NAME: ${{ inputs.image_name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          SOURCE_SUBJECT: ${{ steps.metadata.outputs.source_subject }}
+          IMAGE_TAG: ${{ steps.metadata.outputs.image_tag }}
+          DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           {
-            echo "## Nexum image"
-            echo "- Image: \`${{ inputs.image_name }}\`"
-            echo "- Source revision: \`${{ inputs.source_revision }}\`"
-            echo "- Image tag: \`${{ steps.metadata.outputs.image_tag }}\`"
-            echo "- Digest: \`${{ steps.image.outputs.digest }}\`"
+            echo "## Image Published"
+            echo "- Service: \`$IMAGE_NAME\`"
+            echo "- Source: [\`${SOURCE_REVISION:0:12}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SOURCE_REVISION}) - $SOURCE_SUBJECT"
+            echo "- Harbor image: \`${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}\`"
+            echo "- Digest: \`$DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -47,11 +47,9 @@ jobs:
         env:
           SOURCE_REVISION: ${{ inputs.source_revision }}
         run: |
-          set -euo pipefail
-          source_subject="$(git log -1 --format=%s "$SOURCE_REVISION")"
           {
             echo "image_tag=git-${SOURCE_REVISION:0:12}"
-            echo "source_subject=$source_subject"
+            echo "source_subject=$(git log -1 --format=%s)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx

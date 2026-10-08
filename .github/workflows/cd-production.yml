@@ -1,3 +1,4 @@
+# Test environment workflow - configured for local Minikube registry and runner
 name: CD - Production | Promote WEBCT to Production
 run-name: Production | Promote ${{ inputs.version }} from WEBCT
 

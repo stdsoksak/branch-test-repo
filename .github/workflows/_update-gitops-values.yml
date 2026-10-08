@@ -1,3 +1,4 @@
+# Test environment workflow - configured for local Minikube registry and runner
 name: _ Update GitOps Values
 
 on:

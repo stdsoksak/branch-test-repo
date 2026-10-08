@@ -1,3 +1,4 @@
+# Test environment workflow - configured for local Minikube registry and runner
 name: CD - Development
 run-name: WEBND | Build and deploy ${{ github.ref_name }}@${{ github.sha }}
 

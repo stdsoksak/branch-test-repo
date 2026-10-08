@@ -1,3 +1,4 @@
+# Test environment workflow - configured for local Minikube registry and runner
 name: CD - Hotfix | Build merged hotfix for Production
 run-name: Hotfix check | PR #${{ github.event.pull_request.number }} from ${{ github.event.pull_request.head.ref }}
 

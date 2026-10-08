@@ -1,3 +1,4 @@
+# Test environment workflow - configured for local Minikube registry and runner
 name: Release Initialization Gate
 run-name: Release gate | PR #${{ github.event.pull_request.number }} to ${{ github.event.pull_request.base.ref }}
 

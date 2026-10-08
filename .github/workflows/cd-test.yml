@@ -1,3 +1,4 @@
+# Test environment workflow - configured for local Minikube registry and runner
 name: CD - Test | Promote WEBND to WEBNT
 run-name: WEBNT | Promote current WEBND artifacts by ${{ github.actor }}
 
